@@ -10,7 +10,7 @@ veriables terminalogy:
 
 Spike:    
     spike_clusters,  timestamps,    spike_time             their row id means the sequence of spikes based on occurancy
-    (cluster id)   (sample count)  (realworld time sec)   their value
+    (cluster id)   (sample count)  (realworld time sec)    their value
     
     spike_clusters_stay,timestamps_stay,spiketime_stay    same as above, if you are using speed mask, this means low velocity part, (no stay) means high velocity
     
@@ -18,7 +18,7 @@ Spike:
     
 Sync:    
     vsync,                      esync_timestamps              their row id means the sequence of sync pulse
-    (frame count in the video) (sample count in ns6 file)     their value
+    (PCtimestamp in the video) (sample count in ns6 file)     their value
     
     signal_on_timestamps    basically same as esync_timestamps, except pulse means external input
     
@@ -66,8 +66,8 @@ Behavior:
 #                  Packages 
 # ----------------------------------------------------------------------------
 
-import brpylib, time, random, pickle, numpy as np, pandas as pd, matplotlib.pyplot as plt, numpy_groupies as npg
-from scipy import optimize, ndimage, interpolate, stats
+import brpylib, time, random, pickle, cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt, numpy_groupies as npg
+from scipy import optimize, ndimage, interpolate, stats, signal
 from pathlib import Path
 from tkinter import filedialog
 
@@ -75,42 +75,30 @@ from tkinter import filedialog
 # ----------------------------------------------------------------------------
 #                  Functions here
 # ----------------------------------------------------------------------------
-
-
-def load_files(fdir, fn, Nses, dlc_tail, fontsize = 15):
+      
+def load_files_newcam(fdir, fn, Nses, dlc_tail, fontsize = 15):                     
     # if Nses > 1, mind the rule of name.
     spike_times = np.load(fdir/fn/'spike_times.npy')
     spike_times = np.squeeze(spike_times)# delete that stupid dimension.
     spike_clusters = np.load(fdir/fn/'spike_clusters.npy')
     clusters_quality = pd.read_csv(fdir/fn/'cluster_group.tsv', sep='\t')
-    esync_timestamps_load = np.load(fdir/fn/('Esync_timestamps_'+fn+'.npy'))  
+    esync_timestamps_load = np.load(fdir/fn/(fn+'Frame_timestamps'+'.npy'))  
 
-# =============================================================================
-#     if 'signal_on' in experiment_tag :
-#         signal_on_timestamps_load = np.load(fdir/fn/('Signal_on_timestamps_'+fn+'.npy')) 
-#     可以加一个判断工作文件夹中有没有Signal-on 的文件来进行这一步的操作
-# =============================================================================
-    if len(list((fdir/fn).glob('Signal_on_timestamps_*.*')))==1:
-        signal_on_timestamps_load = np.load(fdir/fn/('Signal_on_timestamps_'+fn+'.npy'))
+    if len(list((fdir/fn).glob('*Signal_on_timestamps.*')))==1:
+        signal_on_timestamps_load = np.load(fdir/fn/(fn+'Signal_on_timestamps'+'.npy'))
 
     if Nses == 1:
         timestamps = spike_times
         spike_clusters2 = spike_clusters
         dlch5 = pd.read_hdf(fdir/fn/(fn+dlc_tail))
         
-        if (fdir/fn/(fn+'FrameState.csv')).exists():                        #新FrameState记录模式
-            frame_state = pd.read_csv(fdir/fn/(fn+'FrameState.csv'))
-            vsync_temp = np.array(frame_state['SyncLED'], dtype='uint')
-            vsync = np.where((vsync_temp[1:] - vsync_temp[:-1]) ==1)[0]+1
-        else:                                                               #旧的利用Bonsai做视频同步的方式
-            vsync_csv = pd.read_csv(fdir/fn/(fn+'.csv'), names=[0,1,2])
-            vsync_temp = np.array(vsync_csv[1], dtype='uint')
-            vsync = np.where((vsync_temp[1:] - vsync_temp[:-1]) ==1)[0]+1
+        frame_state = pd.read_csv(fdir/fn/(fn+'.csv'))
+        vsync = np.array(frame_state['PCtimestamp'], dtype='float')
                     
         esync_timestamps = esync_timestamps_load
         dlc_files = dlch5
         
-        if len(list((fdir/fn).glob('Signal_on_timestamps_*.*')))==1:
+        if len(list((fdir/fn).glob('*Signal_on_timestamps.*')))==1:
             signal_on_timestamps = signal_on_timestamps_load
 
 
@@ -174,27 +162,17 @@ def load_files(fdir, fn, Nses, dlc_tail, fontsize = 15):
     else:        
         raise Exception('Nses must be a positive integer.')
     
-        
-    
-    if (fdir/fn/(fn+'FrameState.csv')).exists():
-        if len(list((fdir/fn).glob('Signal_on_timestamps_*.*')))==1:
-            return spike_clusters2, timestamps, clusters_quality, vsync, esync_timestamps, dlc_files, frame_state, signal_on_timestamps
-        else:
-            return spike_clusters2, timestamps, clusters_quality, vsync, esync_timestamps, dlc_files, frame_state
-    else:
-        if len(list((fdir/fn).glob('Signal_on_timestamps_*.*')))==1:
-            return spike_clusters2, timestamps, clusters_quality, vsync, esync_timestamps, dlc_files, signal_on_timestamps
-        else:
-            return spike_clusters2, timestamps, clusters_quality, vsync, esync_timestamps, dlc_files
-        
-            
 
-def sync_check(esync_timestamps, vsync, Nses, fontsize):    
+    if len(list((fdir/fn).glob('Signal_on_timestamps_*.*')))==1:
+        return spike_clusters2, timestamps, clusters_quality, vsync, esync_timestamps, dlc_files, frame_state, signal_on_timestamps
+    else:
+        return spike_clusters2, timestamps, clusters_quality, vsync, esync_timestamps, dlc_files, frame_state
+
+def sync_check(esync_timestamps, vsync, Nses, fontsize):                            
     if Nses == 1:
         if np.size(vsync) != np.size(esync_timestamps):
             raise Exception('N of E&V Syncs do not Equal!!! Problems with Sync!!!')
         else:
-            print('N of E&V Syncs equal. You may continue.')
             # plot for check.
             fig = plt.figure(figsize=(10,5))
             ax1 = fig.add_subplot(1,2,1)
@@ -203,8 +181,14 @@ def sync_check(esync_timestamps, vsync, Nses, fontsize):
             vsync_inter = vsync[1:] - vsync[:-1]
             ax1.hist(esync_inter, bins = len(set(esync_inter)))
             ax1.set_title('N samples between Esyncs', fontsize=fontsize*1.3)
-            ax2.hist(vsync_inter, bins = len(set(vsync_inter)))
-            ax2.set_title('N frames between Vsyncs', fontsize=fontsize*1.3)
+            ax2.hist(vsync_inter, bins = 100)
+            ax2.set_title('time(s) between Vsyncs', fontsize=fontsize*1.3)
+            # check interval
+            outlier = np.where(esync_inter>np.mean(esync_inter)*1.1)[0]
+            if len(outlier) != 0:
+                raise Exception('There maybe frame loss')
+            print('N of E&V Syncs equal\nThere is no frame loss\nYou may continue.')
+
             
     else:
         fig = plt.figure(figsize=(10,5))
@@ -233,43 +217,10 @@ def sync_cut_head_tail(spike_clusters, timestamps, esync_timestamps):
     return spike_clusters, timestamps
 
 def timestamps2time(timestamps, esync_timestamps, sync_rate):
-    AssumedTime = np.linspace(0, (np.size(esync_timestamps)-1)/sync_rate, num=np.size(esync_timestamps))
-    stamps2time_interp = interpolate.UnivariateSpline(esync_timestamps, AssumedTime, k=1, s=0)
+    real_time = np.linspace(0, (np.size(esync_timestamps)-1)/sync_rate, num=np.size(esync_timestamps))
+    stamps2time_interp = interpolate.UnivariateSpline(esync_timestamps, real_time, k=1, s=0)
     spiketime = stamps2time_interp(timestamps)
     return spiketime
-
-    
-'''sync cut 和 timestamps2time 和 spd mask这三个功能并在一起觉得有些耦合，在非spatial的组反而是利用了if来取消spd mask的功能，所以想拆开
-def sync_cut_apply_spd_mask_20msbin(spike_clusters, timestamps, ses, esync_timestamps, sync_rate, experiment_tag, temporal_bin_length=0.02):
-    
-    # head&tail cut here, then transform into frame_id for spd_mask.
-    # applying spd_mask means sort spikes into running and staying.
-    spike_clusters = np.delete(spike_clusters, np.where(timestamps > esync_timestamps[-1])[0])
-    spike_clusters = np.delete(spike_clusters, np.where(timestamps < esync_timestamps[0])[0])
-    timestamps = np.delete(timestamps, np.where(timestamps > esync_timestamps[-1])[0])
-    timestamps = np.delete(timestamps, np.where(timestamps < esync_timestamps[0])[0])
-    # assign time-values from esync_timestamps
-    interp_y = np.linspace(0, (np.size(esync_timestamps)-1)/sync_rate, num=np.size(esync_timestamps))
-    stamps2time_interp = interpolate.UnivariateSpline(esync_timestamps, interp_y, k=1, s=0)
-    spiketime = stamps2time_interp(timestamps)
-        
-    if 'spatial' in experiment_tag:
-        spiketime_bin_id = (spiketime/temporal_bin_length).astype('uint')
-        spike_spd_id = ses.spd_mask[spiketime_bin_id]
-        high_spd_id = np.where(spike_spd_id==1)[0]
-        low_spd_id= np.where(spike_spd_id==0)[0]
-        
-        spike_clusters_stay = spike_clusters[low_spd_id]
-        timestamps_stay = timestamps[low_spd_id]
-        spiketime_stay = spiketime[low_spd_id]
-        spike_clusters = spike_clusters[high_spd_id]
-        timestamps = timestamps[high_spd_id]
-        spiketime = spiketime[high_spd_id]
-
-        return (spike_clusters,timestamps,spiketime, spike_clusters_stay,timestamps_stay,spiketime_stay)
-    else:
-        return (spike_clusters,timestamps,spiketime)
-'''
 
 def signal_stamps2time(esync_timestamps, signal_on_timestamps, Nses, sync_rate):
     if Nses == 1:
@@ -290,7 +241,13 @@ def signal_stamps2time(esync_timestamps, signal_on_timestamps, Nses, sync_rate):
                 pass
     return signal_on_time
 
-def speed_mask(spike_clusters, timestamps, spiketime, ses, temporal_bin_length=20):
+def smooth_dlc_file(dlc_files):                                                                     # need!!!!!!
+    # how to ?
+    # in the dlc built-in filter process, no nan value is created, so every block is filled with number, I don't know how it process
+    # in this function, will use un-filtered data to discard uncertain value and smooth the trajectory
+    return
+    
+def speed_mask(spike_clusters, timestamps, spiketime, ses, temporal_bin_length=20):             # wait for modify
     spiketime_bin_id = (spiketime/temporal_bin_length).astype('uint')
     spike_spd_id = ses.spd_mask[spiketime_bin_id]
     high_spd_id = np.where(spike_spd_id==1)[0]
@@ -305,12 +262,11 @@ def speed_mask(spike_clusters, timestamps, spiketime, ses, temporal_bin_length=2
 
     return (spike_clusters,timestamps,spiketime, spike_clusters_stay,timestamps_stay,spiketime_stay)
 
-
-def spatial_information_skaggs(timestamps, ratemap, dwell_smo):
+def spatial_information_skaggs(timestamps, ratemap, dwell_smo):                                 # wait for modify
     global_mean_rate = round(np.size(timestamps)/np.sum(dwell_smo), 4)
     spatial_info = round(np.nansum((dwell_smo/np.sum(dwell_smo)) * (ratemap/global_mean_rate) * np.log2((ratemap/global_mean_rate))), 4)
     return spatial_info, global_mean_rate
-
+'''
 def time2hd(t, time2xy_interp):
     right = np.vstack((time2xy_interp[4](t), time2xy_interp[5](t)))
     left = np.vstack((time2xy_interp[2](t), time2xy_interp[3](t)))
@@ -318,8 +274,8 @@ def time2hd(t, time2xy_interp):
     hd_radius = np.angle(hd_vector[:,0] + 1j*hd_vector[:,1])
     hd_degree = (hd_radius+np.pi)/(np.pi*2)*360
     return hd_degree
-    
-
+'''
+#%% Functions on 1D Env
 # ----------------------------------------------------------------------------
 #                  Functions on 1D Env
 # ----------------------------------------------------------------------------        
@@ -348,13 +304,11 @@ def find_center_circular_track(x,y, fontsize):
     ax1.scatter(np.append(x, center_2[0]), np.append(y,center_2[1]), s=3, alpha=0.1)
     return center_2, R_2, residu_2       
 
-
 def boxcar_smooth_1d_circular(arr, kernel_width=20):
     arr_smo = np.convolve(np.array([1/kernel_width]*kernel_width),
                           np.concatenate((arr,arr)))[kernel_width : (arr.shape[0]+kernel_width)]
     arr_smo = np.concatenate((arr_smo[-(kernel_width):], arr_smo[:-(kernel_width)]))
     return arr_smo
-
 
 def ratemap_1d_circular(spiketime, time2xy_interp, dwell_smo, nspatial_bins):
     
@@ -383,7 +337,6 @@ def positional_information_olypher_1dcircular(spiketime, time2xy_interp, total_t
         pos_info.append(np.sum(p_kxi * np.log2(p_kxi/p_k[:np.size(p_kxi)])))# set range for p_k is that, e.g. some time bin might have 8 spks or more but not in certain spatial bin, then arrays are not the same length. 
     return np.array(pos_info)
         
-    
 def shuffle_test_1d_circular(u, session, Nses, temporal_bin_length=0.02, nspatial_bins_spa=360, nspatial_bins_pos=48, p_threshold=0.01):
     # Ref, Monaco2014, head scanning, JJKnierim's paper.
     # Units must pass shuffle test and either their spa_info >1 or max_pos_info >0.4
@@ -456,12 +409,106 @@ def shuffle_test_1d_circular(u, session, Nses, temporal_bin_length=0.02, nspatia
                     if i.spatial_info[j.id]>1 or i.postional_info[j.id]>0.4:
                         i.is_place_cell[j.id] = True
 
-
+#%% Functions on 2D Env
 # ----------------------------------------------------------------------------
 #                  Functions on 2D Env
 # ----------------------------------------------------------------------------
-def boxcar_smooth_2d():
-    pass
+def pixel_to_cm_PlusMaze(dlc_files, nodes_set, fdir, fn):
+    
+    #### Kernals ####
+    kernal = {'LU':0, 'LD':0, 'RU':0, 'RD':0, 'anti_LU':0, 'anti_LD':0, 'anti_RU':0, 'anti_RD':0}
+    kernal['LU'] = np.ones((100,100)) * -1
+    kernal['LD'] = np.ones((100,100)) * -1
+    kernal['RU'] = np.ones((100,100)) * -1
+    kernal['RD'] = np.ones((100,100)) * -1
+    kernal['LU'][ 0: 50, 0: 50] = 1
+    kernal['LD'][50:100, 0: 50] = 1
+    kernal['RU'][ 0: 50,50:100] = 1
+    kernal['RD'][50:100,50:100] = 1
+    kernal['anti_LU'] = np.ones((100,100))
+    kernal['anti_LD'] = np.ones((100,100))
+    kernal['anti_RU'] = np.ones((100,100))
+    kernal['anti_RD'] = np.ones((100,100))
+    kernal['anti_LU'][ 0: 50, 0: 50] = -1
+    kernal['anti_LD'][50:100, 0: 50] = -1
+    kernal['anti_RU'][ 0: 50,50:100] = -1
+    kernal['anti_RD'][50:100,50:100] = -1
+
+    ### average frames across the video ###############################################################
+    video_path = str(fdir/fn/(fn+'.avi'))
+    cap = cv2.VideoCapture(video_path, cv2.IMREAD_GRAYSCALE)
+    ret, frame = cap.read()
+    height, width, _ = frame.shape
+    
+    accumulator = np.zeros((height, width), dtype=np.float32)    
+    
+    print('this will take long, wait patiently', end='')
+    t=time.time()
+    frame_count = 0
+    while True: #frame_count<15000
+        ret, frame = cap.read()
+        if not ret:    #检查是否读到帧
+            break
+        accumulator += frame[:,:,0].astype(np.float32)          # 每一帧累加一次, 因为黑白图像，所以只加0位置的颜色
+        frame_count += 1
+    print('\rcalculating average frame takes', time.time()-t)
+    cap.release()
+    
+    average_frame = (accumulator / frame_count).astype(np.uint8)
+    
+    cv2.namedWindow('average_frame', cv2.WINDOW_NORMAL)
+    cv2.imshow('average_frame', average_frame)
+    cv2.waitKey(0)
+    
+    def get_corner_pos(rough_pos, kernal):
+        result = np.ones((height,width))*-9999999
+        if rough_pos[0]<150 or rough_pos[0]>height-150:
+            raise ValueError('rough pos is set too close to boundary')
+        if rough_pos[1]<150 or rough_pos[1]>width-150:
+            raise ValueError('rough pos is set too close to boundary')
+            
+        for ih in range(rough_pos[0]-100,rough_pos[0]+100):              # 100 for search area
+            for iw in range(rough_pos[1]-100,rough_pos[1]+100):
+                roi = average_frame[ih-50:ih+50,iw-50:iw+50]             # 80 for kernal size
+                result[ih,iw] = np.sum(np.multiply(roi,kernal))
+        return (np.where(result==np.max(result))[0][0], np.where(result==np.max(result))[1][0])
+    
+    ### fit the structure nodes to the precise pixel #####################################################
+    t=time.time()
+    for i in range(len(nodes_set['name'])):
+        nodes_set['precise_position'][i] = get_corner_pos(nodes_set['rough_position'][i], kernal[nodes_set['corner_type'][i]])
+
+    for i in range(len(nodes_set['name'])):
+        cv2.circle(average_frame, (nodes_set['precise_position'][i][1], nodes_set['precise_position'][i][0]), 5,(255,255,255),-1)
+    print('fitting precise postion takes', time.time()-t)
+    
+    cv2.namedWindow('average_frame', cv2.WINDOW_NORMAL)
+    cv2.imshow('average_frame', average_frame)
+    cv2.waitKey(0)
+    
+    ### generate a convert matrix based on the precise pixel and real world length #######################
+    input_matrix  = np.ones((len(nodes_set['name']),3))
+    output_matrix = np.ones((len(nodes_set['name']),3))
+    for i in range(len(nodes_set['name'])):
+        input_matrix[i][0]  = nodes_set['precise_position'][i][1]
+        input_matrix[i][1]  = nodes_set['precise_position'][i][0]
+        output_matrix[i][0] = nodes_set['real_position'][i][1]
+        output_matrix[i][1] = nodes_set['real_position'][i][0]
+    # 使用最小二乘法求解线性映射矩阵 A
+    convert_matrix, _, _, _ = np.linalg.lstsq(input_matrix, output_matrix, rcond=None)
+    # convert the dlc file
+    for i in range(0, int(dlc_files.shape[1]/3)):
+        bodypart_position = np.ones((dlc_files.shape[0],3))
+        bodypart_position[:,0:2] = dlc_files.iloc[:,3*i:3*i+2]
+        bodypart_position = np.dot(bodypart_position, convert_matrix)            # 点乘转换矩阵
+        dlc_files.iloc[:,3*i:3*i+2] = bodypart_position[:,0:2]
+    
+    print('convertion done')
+
+def boxcar_smooth_2d(xmap, boxcar_width = 3):
+    boxcar_kernel = np.ones((boxcar_width, boxcar_width)) / (boxcar_width * boxcar_width)
+    xmap_smooth = signal.convolve2d(xmap, boxcar_kernel, mode='same')  # to keep edge information, use the mode 'same' keep same size of map
+    return xmap_smooth
 
 def gaussian_smooth_2d():
     pass   
@@ -473,214 +520,51 @@ def shuffle_test_2d():
 def Kalman_filter_2d():#interpreted from Bohua's code.
     pass
 
-# def time2xy(ses,t):
-#     return np.array(ses.time2xy_interp[0](t), (ses.time2xy_interp[1](t)))
-# ----------------------------------------------------------------------------
-#                  Classes session
-# ----------------------------------------------------------------------------
-
-class Session(object):    
-    def __init__(self, dlch5, dlc_col_ind_dict, vsync, sync_rate, experiment_tag,
-                 ses_id=0, fontsize=15):
-        # docstring?
-        
-        self.left_pos = np.vstack((np.array(dlch5[dlch5.columns[dlc_col_ind_dict['left_pos']]]), np.array(dlch5[dlch5.columns[dlc_col_ind_dict['left_pos']+1]]))).T
-        self.right_pos = np.vstack((np.array(dlch5[dlch5.columns[dlc_col_ind_dict['right_pos']]]), np.array(dlch5[dlch5.columns[dlc_col_ind_dict['right_pos']+1]]))).T            
-        self.id = ses_id
-        self.vsync = vsync
-        self.experiment_tag = experiment_tag
-        self.sync_rate = sync_rate
-        self.fontsize = fontsize
-        for key,value in dlc_col_ind_dict.items():# for extensive need from DLC. Presently a basic attribution.
-            if key != 'left_pos' and key != 'right_pos':
-                exec('self.'+key+'=np.vstack((np.array(dlch5[dlch5.columns[dlc_col_ind_dict['+str(value)+']]]), np.array(dlch5[dlch5.columns[dlc_col_ind_dict['+str(value)+']+1]]))).T')
-
-        if 'circular' in self.experiment_tag:
-            # need to find center of the circular track                
-            self.center = find_center_circular_track(np.vstack((self.left_pos, self.right_pos))[:,0], np.vstack((self.left_pos, self.right_pos))[:,1], fontsize=self.fontsize)
-            self.pixpcm = 2*self.center[1]/65# D == 65. emmm....        
-
-    def sync_cut_generate_frame_time(self):
-        print('sync_cut of Session should only run for once, otherwise you need to reload files. So far, it only works on left and right pos.')
-        
-        #potential bugs here.
-        
-        self.left_pos = self.left_pos[self.vsync[0]:self.vsync[-1]+1, :]
-        self.right_pos = self.right_pos[self.vsync[0]:self.vsync[-1]+1, :]
-        #assign time values for frames. So far for a single ses, single video.
-        frame2time_interp = interpolate.UnivariateSpline(self.vsync-self.vsync[0], np.linspace(0, (np.size(self.vsync)-1)/self.sync_rate, num=np.size(self.vsync)),
-                                                         k=1, s=0)
-        self.frame_time = frame2time_interp(np.arange(self.left_pos.shape[0])).astype('float64')
-        self.total_time = self.frame_time[-1]
-    
-    def remove_nan_merge_pos_get_hd(self):        
-        nan_id = np.isnan(self.left_pos) + np.isnan(self.right_pos)
-        nan_id = nan_id[:,0] + nan_id[:,1]
-        nan_id = np.where(nan_id == 2, 1, 0).astype('bool')
-        self.frame_time = self.frame_time[~nan_id]
-        self.left_pos = self.left_pos[~nan_id]
-        self.right_pos = self.right_pos[~nan_id]      
-        if 'spatial' in self.experiment_tag:
-            hd_vector = self.right_pos - self.left_pos
-            hd_radius = np.angle(hd_vector[:,0] + 1j*hd_vector[:,1])
-            self.hd_degree = (hd_radius+np.pi)/(np.pi*2)*360
-            
-        
-        self.pos_pix = (self.left_pos + self.right_pos)/2
-        if 'circular' in self.experiment_tag:
-            self.pos = ((self.left_pos + self.right_pos)/2 - self.center[0])/self.pixpcm
-        else:
-            print('you need to code your way do define pixels per cm, to go furthur.')
-    
-    def generate_time2xy_interpolate(self, mode='linear'):
-        if mode == 'cspline':
-            # using scipy.interpolate.UnivariateSpline seperately with x&y might cause some infidelity. Mind this.
-            # k = 3, how to set a proper smooth factor s???
-            # what about it after Kalman filter?
-            # how to check this???
-            time2x_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,0])
-            time2y_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,1])
-            time2x_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,0])
-            time2y_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,1])
-            time2x_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,0])
-            time2y_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,1])
-        elif mode == 'linear':
-            time2x_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,0], k=1)
-            time2y_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,1], k=1)
-            time2x_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,0], k=1)
-            time2y_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,1], k=1)
-            time2x_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,0], k=1)
-            time2y_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,1], k=1)
-        self.time2xy_interp = (time2x_interp, time2y_interp, time2x_left, time2y_left, time2x_right, time2y_right)
-
-
-   
-    # below is older version of spd_mask which aligns to frames.
-    # def generate_spd_mask(self, spd_threshold = 2):
-    #     # spd check mask. Hmmm... instant dist., what to smooth? xy? instant dist. vec? spd?. presently on inst dist.
-    #     self.inst_dist = np.sqrt((self.pos[1:,:] - self.pos[:-1,:])[:,0]**2 + (self.pos[1:,:] - self.pos[:-1,:])[:,1]**2)
-    #     # 1d gaussian filter on dist. Do not know if it is proper. And, what is the relationship between sigma and Nsamples of kernel????????
-    #     self.inst_dist_smo = ndimage.gaussian_filter1d(self.inst_dist, sigma = 1)
-    #     self.inst_spd = self.inst_dist_smo/(self.frame_time[1:] - self.frame_time[:-1])
-    #     self.spd_mask_low = np.where(self.inst_spd < spd_threshold)[0].astype('uint64')# presently used bar is 2cm/s
-    #     self.spd_mask_high = np.where(self.inst_spd > spd_threshold)[0].astype('uint64')
-
-    def generate_spd_mask_20ms_bin(self, threshold=2, temporal_bin_length=0.02):
-        t = np.linspace(0, self.total_time, num=(self.total_time/temporal_bin_length +1).astype('uint'))
-        x = self.time2xy_interp[0](t)
-        y = self.time2xy_interp[1](t)
-        dist = np.sqrt((x[1:]-x[:-1])**2 + (y[1:]-y[:-1])**2)
-        self.inst_spd = dist/temporal_bin_length
-        self.spd_mask = np.where(self.inst_spd > 2, 1, 0)
-        self.spd_mask = np.append(self.spd_mask, 0).astype('bool')# for convinience.
-    
-    
-    def generate_dwell_map_circular(self, nspatial_bins=360, smooth='boxcar', temporal_bin_length=0.02):
-        if 'circular' not in self.experiment_tag:
-            print('wrong method was chosen.')
-        else:
-            #just a repeat after spd_mask.
-            self.pol = np.angle(self.pos[:,0] + 1j*self.pos[:,1])
-            self.pol_bin = ((self.pol+np.pi)/np.pi*nspatial_bins/2).astype('uint')
-            
-            # temporal resample for spd_mask
-            t = np.linspace(0, self.total_time, num=(self.total_time/temporal_bin_length +1).astype('uint'))
-            self.pos_resample = np.vstack((self.time2xy_interp[0](t), self.time2xy_interp[1](t))).T
-            self.pol_resample = np.angle(self.pos_resample[:,0] + 1j*self.pos_resample[:,1])
-            self.pol_bin_resample = ((self.pol_resample+np.pi)/np.pi*nspatial_bins/2).astype('uint')
-            
-            #apply spd_mask.
-            dwell = npg.aggregate(self.pol_bin_resample[self.spd_mask], temporal_bin_length, size=nspatial_bins)
-            # emmm....so where is 0 degree???  It is Right.
-            pol_bin_1half = self.pol_bin_resample[:int(np.size(self.pol_bin_resample)/2)]
-            spd_mask_1half = self.spd_mask[:int(np.size(self.pol_bin_resample)/2)]
-            pol_bin_2half = self.pol_bin_resample[int(np.size(self.pol_bin_resample)/2):]
-            spd_mask_2half = self.spd_mask[int(np.size(self.pol_bin_resample)/2):]
-            dwell_1half = npg.aggregate(pol_bin_1half[spd_mask_1half], temporal_bin_length, size=nspatial_bins)
-            dwell_2half = npg.aggregate(pol_bin_2half[spd_mask_2half], temporal_bin_length, size=nspatial_bins)
-
-            if smooth == 'boxcar':
-                self.dwell_smo = boxcar_smooth_1d_circular(dwell)
-                self.dwell_1half_smo = boxcar_smooth_1d_circular(dwell_1half)
-                self.dwell_2half_smo = boxcar_smooth_1d_circular(dwell_2half)
-            else:
-                print('for other type of kernels... to be continue...')
-            
-            fig = plt.figure(figsize=(5,15))
-            ax1 = fig.add_subplot(311)
-            ax1.set_title('spd check', fontsize=self.fontsize*1.3)
-            ax1.hist(self.inst_spd, range = (0,70), bins = 100)
-            spd_bin_max = np.max(np.bincount(self.inst_spd.astype('uint'), minlength=100))
-            ax1.plot(([np.median(self.inst_spd)]*2), [0, spd_bin_max*0.7], color='k')
-            ax1.set_xlabel('animal spd cm/s', fontsize=self.fontsize)
-            ax1.set_ylabel('N 20ms teporal bins', fontsize=self.fontsize)
-            ax2 = fig.add_subplot(312)
-            ax2.set_title('animal spatial occupancy', fontsize=self.fontsize)
-            ax2.plot(np.linspace(1, nspatial_bins, num=nspatial_bins, dtype='int'), self.dwell_smo, color='k')
-            ax2.plot(np.linspace(1, nspatial_bins, num=nspatial_bins, dtype='int'), self.dwell_1half_smo, color='r')
-            ax2.plot(np.linspace(1, nspatial_bins, num=nspatial_bins, dtype='int'), self.dwell_2half_smo, color='b')
-            ax2.set_ylim(0, np.max(self.dwell_smo)*1.1)
-            ax2.set_xlabel('spatial degree-bin', fontsize=self.fontsize)
-            ax2.set_ylabel('occupancy in sec', fontsize=self.fontsize)
-            ax3 = fig.add_subplot(313)
-            ax3.scatter(self.pol, np.linspace(0, self.total_time, num=np.size(self.pol)), c='k', s=0.1)
-            ax3.set_title('animal trajectory', fontsize=self.fontsize*1.3)
-            ax3.set_xlabel('position in radius degree.', fontsize=self.fontsize)
-            ax3.set_ylabel('time in sec', fontsize=self.fontsize)
-
+#%% Classes detour session
 # ----------------------------------------------------------------------------
 #                  Classes detour session 
 # ----------------------------------------------------------------------------
 
 class DetourSession(object):
-    def __init__(self, dlch5, dlc_col_ind_dict, frame_state, vsync, sync_rate, ses_id=0, fontsize=15):
+    def __init__(self, dlch5, dlc_col_ind_dict, frame_state, esync_timestamps, sync_rate, ses_id=0, fontsize=15):
         
-        #self.left_pos = np.vstack((np.array(dlch5[dlch5.columns[dlc_col_ind_dict['left_pos']]]), np.array(dlch5[dlch5.columns[dlc_col_ind_dict['left_pos']+1]]))).T
-        #self.right_pos = np.vstack((np.array(dlch5[dlch5.columns[dlc_col_ind_dict['right_pos']]]), np.array(dlch5[dlch5.columns[dlc_col_ind_dict['right_pos']+1]]))).T            
         self.id = ses_id
-        self.vsync = vsync
+        self.esync_timestamps = esync_timestamps
         self.sync_rate = sync_rate
         self.fontsize = fontsize
         
         dlcmodelstr=dlch5.columns[1][0]
-        for key in dlc_col_ind_dict:# for customized need from DLC.
+        for key in dlc_col_ind_dict:          # for customized need from DLC.
             pos_for_key = np.vstack((np.array(dlch5[(dlcmodelstr,key,'x')]), np.array(dlch5[(dlcmodelstr,key,'y')]))).T    
             setattr(self, key, pos_for_key)
         
         for key in frame_state.columns:
             setattr(self, key, np.array(frame_state[key]).T)
-      
-        self.raw_frame_length = (getattr(self, 'Frame')).shape[0]       #mark down the total frame length of raw video, for sync cut
         
-
-        # if 'circular' in self.experiment_tag:
-        #     # need to find center of the circular track                
-        #     self.center = find_center_circular_track(np.vstack((self.left_pos, self.right_pos))[:,0], np.vstack((self.left_pos, self.right_pos))[:,1], fontsize=self.fontsize)
-        #     self.pixpcm = 2*self.center[1]/65# D == 65. emmm....        
-    
-    def sync_cut_head_tail(self): 
-        for key in vars(self):
-            FrameData = getattr(self, key)
-            if hasattr(FrameData, 'shape') and FrameData.shape[0] == self.raw_frame_length:           #if the data length quals to raw video's , it needs sync cut head tail 
-                FrameData = FrameData[self.vsync[0]:self.vsync[-1]+1]
-                setattr(self, key, FrameData)
         self.frame_length = len(self.Frame)
-                
-    def framestamps2time(self):
-        #assign time values for frames. So far for a single ses, single video.
-        AssumedTime = np.linspace(0, (np.size(self.vsync)-1)/self.sync_rate, num=np.size(self.vsync))
-        frame2time_interp = interpolate.UnivariateSpline(self.vsync-self.vsync[0], AssumedTime, k=1, s=0)
-        self.frametime = frame2time_interp(np.arange(self.frame_length)).astype('float64')
-        self.total_time = int(self.frametime[-1]) 
-    
-    def generate_interpolater(self):
         
-        time2frame = interpolate.interp1d(self.frametime, np.linspace(0, (np.size(self.frametime)-1),num=np.size(self.frametime)), kind='nearest')
-        self.get = {'time2frame':time2frame }
+    def framestamps2time(self):        
+        self.frametime = self.Frame/self.sync_rate                        #because now the sync is all generated by the output with a latency of camera exposure, so here you can directly divide by sync rate
+        self.total_time = self.frametime[-1]
+    
+    def set_mouse_pos_as(self, key1, key2=0):
+        if key2 == 0:
+            self.mouse_pos = getattr(self, key1)
+        else:
+            self.mouse_pos = (getattr(self, key1) + getattr(self, key2)) / 2
+                
+    def generate_interpolater(self):
+        self.get = {}
         
         def time2index(spiketime):
-            frame_id = self.get['time2frame'](spiketime)
+            frame_id = np.round(spiketime*self.sync_rate)       # basically nearest interpolate
             return int(frame_id)
+        # time2frame = interpolate.interp1d(self.frametime, np.linspace(0, (np.size(self.frametime)-1),num=np.size(self.frametime)), kind='nearest')
+        # self.get = {'time2frame':time2frame }
+        
+        # def time2index(spiketime):
+        #     frame_id = self.get['time2frame'](spiketime)
+        #     return int(frame_id)       
         def generate_index_func(obj, key):
             def FUNC(spiketime):
                 return getattr(obj, key)[time2index(spiketime)]
@@ -692,60 +576,20 @@ class DetourSession(object):
                 
         for key in vars(self):
             FrameData = getattr(self, key)
-            if hasattr(FrameData, 'shape') and FrameData.shape[0] == self.frame_length:
+            if type(FrameData) is np.ndarray and FrameData.shape[0] == self.frame_length:
                 if type(FrameData[0]) == np.bool_ :                             #如果是bool值，那么在进行插值的时候应该取最邻近的值，而且bool值可以被数字比大小，所以单独写一个分支
                     self.get[key] = generate_index_func(self, key) 
                 elif type(FrameData[0]) == str :                                #如果是字符串，那么在进行插值的时候应该取最邻近的值
                     self.get[key] = generate_index_func(self, key) 
                 elif type(FrameData[0]) == np.ndarray :                         #如果是一个数组，那意味着选到了某个位置（x，y），所以分别对x，y做插值，输出一个（x，y）
-                    self.get[key+'X'] = interpolate.UnivariateSpline(self.frametime, FrameData[:,0])
-                    self.get[key+'Y'] = interpolate.UnivariateSpline(self.frametime, FrameData[:,1])
+                    self.get[key+'X'] = interpolate.UnivariateSpline(self.frametime, FrameData[:,0], k=1, s=0)
+                    self.get[key+'Y'] = interpolate.UnivariateSpline(self.frametime, FrameData[:,1], k=1, s=0)         # k=1 means linear interpolation, s=0 I don't know
                     self.get[key] = generate_mergeXY_func(self, key) 
                 elif FrameData[0] >= 0:                                         #如果是一个数字
-                    self.get[key] = interpolate.UnivariateSpline(self.frametime, FrameData)
+                    self.get[key] = interpolate.UnivariateSpline(self.frametime, FrameData, k=1, s=0)
                 else:
                     raise Exception('Error in generating interpolater, value type not defined')
-            
-    
-    def slowget(self, key, spiketime):
-        ValueSet = getattr(self, key)
-        
-        if type(ValueSet[0]) == np.bool_ :        #如果是bool值，那么在进行插值的时候应该取最邻近的值，而且bool值可以被数字比大小，所以单独写一个分支
-            Interpolater = interpolate.interp1d(self.frametime, ValueSet, kind='previous')
-            ValueAtTime = Interpolater(spiketime)
-            return ValueAtTime
-        
-        elif type(ValueSet[0]) == str :           #如果是字符串，那么在进行插值的时候应该取最邻近的值
-            Interpolater = interpolate.UnivariateSpline(self.frametime, ValueSet)
-            ValueAtTime = Interpolater(spiketime)
-            return ValueAtTime
-        
-        elif type(ValueSet[0]) == np.ndarray :    #如果是一个数组，那意味着选到了某个位置（x，y），所以分别对x，y做插值，输出一个（x，y）
-            InterpolaterX = interpolate.UnivariateSpline(self.frametime, ValueSet[:,0])
-            InterpolaterY = interpolate.UnivariateSpline(self.frametime, ValueSet[:,1])
-            ValueAtTime = [InterpolaterX(spiketime),InterpolaterY(spiketime)]
-            return ValueAtTime
-        
-        elif ValueSet[0] >=0 :              #如果是一个数字
-            Interpolater = interpolate.UnivariateSpline(self.frametime, ValueSet)
-            ValueAtTime = Interpolater(spiketime)
-            return ValueAtTime        
-        else:
-            raise Exception('You acquired wrong variable')
-    
-    # def sync_cut_generate_frame_time(self):
-    #     print('sync_cut of Session should only run for once, otherwise you need to reload files. So far, it only works on left and right pos.')
-        
-    #     #potential bugs here.
-        
-    #     self.left_pos = self.left_pos[self.vsync[0]:self.vsync[-1]+1, :]
-    #     self.right_pos = self.right_pos[self.vsync[0]:self.vsync[-1]+1, :]
-    #     #assign time values for frames. So far for a single ses, single video.
-    #     frame2time_interp = interpolate.UnivariateSpline(self.vsync-self.vsync[0], np.linspace(0, (np.size(self.vsync)-1)/self.sync_rate, num=np.size(self.vsync)),
-    #                                                      k=1, s=0)
-    #     self.frame_time = frame2time_interp(np.arange(self.left_pos.shape[0])).astype('float64')
-    #     self.total_time = self.frame_time[-1]
-    
+                
     def remove_nan_merge_pos_get_hd(self):
         nan_id = np.isnan(self.left_pos) + np.isnan(self.right_pos)
         nan_id = nan_id[:,0] + nan_id[:,1]
@@ -764,38 +608,7 @@ class DetourSession(object):
             self.pos = ((self.left_pos + self.right_pos)/2 - self.center[0])/self.pixpcm
         else:
             print('you need to code your way do define pixels per cm, to go furthur.')
-    
-    # def generate_time2xy_interpolate(self, mode='linear'):
-    #     if mode == 'cspline':
-    #         # using scipy.interpolate.UnivariateSpline seperately with x&y might cause some infidelity. Mind this.
-    #         # k = 3, how to set a proper smooth factor s???
-    #         # what about it after Kalman filter?
-    #         # how to check this???
-    #         time2x_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,0])
-    #         time2y_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,1])
-    #         time2x_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,0])
-    #         time2y_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,1])
-    #         time2x_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,0])
-    #         time2y_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,1])
-    #     elif mode == 'linear':
-    #         time2x_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,0], k=1)
-    #         time2y_interp = interpolate.UnivariateSpline(self.frame_time, self.pos[:,1], k=1)
-    #         time2x_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,0], k=1)
-    #         time2y_left = interpolate.UnivariateSpline(self.frame_time, self.left_pos[:,1], k=1)
-    #         time2x_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,0], k=1)
-    #         time2y_right = interpolate.UnivariateSpline(self.frame_time, self.right_pos[:,1], k=1)
-    #     self.time2xy_interp = (time2x_interp, time2y_interp, time2x_left, time2y_left, time2x_right, time2y_right)
-   
-    # below is older version of spd_mask which aligns to frames.
-    # def generate_spd_mask(self, spd_threshold = 2):
-    #     # spd check mask. Hmmm... instant dist., what to smooth? xy? instant dist. vec? spd?. presently on inst dist.
-    #     self.inst_dist = np.sqrt((self.pos[1:,:] - self.pos[:-1,:])[:,0]**2 + (self.pos[1:,:] - self.pos[:-1,:])[:,1]**2)
-    #     # 1d gaussian filter on dist. Do not know if it is proper. And, what is the relationship between sigma and Nsamples of kernel????????
-    #     self.inst_dist_smo = ndimage.gaussian_filter1d(self.inst_dist, sigma = 1)
-    #     self.inst_spd = self.inst_dist_smo/(self.frame_time[1:] - self.frame_time[:-1])
-    #     self.spd_mask_low = np.where(self.inst_spd < spd_threshold)[0].astype('uint64')# presently used bar is 2cm/s
-    #     self.spd_mask_high = np.where(self.inst_spd > spd_threshold)[0].astype('uint64')
-    
+     
     def generate_spd_mask_20ms_bin(self, body_part_key, threshold=2, temporal_bin_length=0.02):
         t = np.linspace(0, self.total_time, num=(self.total_time/temporal_bin_length +1).astype('uint'))
         body_part_postion = self.get[body_part_key](t)
@@ -806,73 +619,54 @@ class DetourSession(object):
         self.spd_mask = np.where(self.inst_spd > 2, 1, 0)
         self.spd_mask = np.append(self.spd_mask, 0).astype('bool')# for convinience.
     
-    # def generate_spd_mask_20ms_bin(self, threshold=2, temporal_bin_length=0.02):
-    #     t = np.linspace(0, self.total_time, num=(self.total_time/temporal_bin_length +1).astype('uint'))
-    #     x = self.time2xy_interp[0](t)
-    #     y = self.time2xy_interp[1](t)
-    #     dist = np.sqrt((x[1:]-x[:-1])**2 + (y[1:]-y[:-1])**2)
-    #     self.inst_spd = dist/temporal_bin_length
-    #     self.spd_mask = np.where(self.inst_spd > 2, 1, 0)
-    #     self.spd_mask = np.append(self.spd_mask, 0).astype('bool')# for convinience.
-    
-    
-    def generate_dwell_map_circular(self, nspatial_bins=360, smooth='boxcar', temporal_bin_length=0.02):
-        if 'circular' not in self.experiment_tag:
-            print('wrong method was chosen.')
-        else:
-            #just a repeat after spd_mask.
-            self.pol = np.angle(self.pos[:,0] + 1j*self.pos[:,1])
-            self.pol_bin = ((self.pol+np.pi)/np.pi*nspatial_bins/2).astype('uint')
-            
-            # temporal resample for spd_mask
-            t = np.linspace(0, self.total_time, num=(self.total_time/temporal_bin_length +1).astype('uint'))
-            self.pos_resample = np.vstack((self.time2xy_interp[0](t), self.time2xy_interp[1](t))).T
-            self.pol_resample = np.angle(self.pos_resample[:,0] + 1j*self.pos_resample[:,1])
-            self.pol_bin_resample = ((self.pol_resample+np.pi)/np.pi*nspatial_bins/2).astype('uint')
-            
-            #apply spd_mask.
-            dwell = npg.aggregate(self.pol_bin_resample[self.spd_mask], temporal_bin_length, size=nspatial_bins)
-            # emmm....so where is 0 degree???  It is Right.
-            pol_bin_1half = self.pol_bin_resample[:int(np.size(self.pol_bin_resample)/2)]
-            spd_mask_1half = self.spd_mask[:int(np.size(self.pol_bin_resample)/2)]
-            pol_bin_2half = self.pol_bin_resample[int(np.size(self.pol_bin_resample)/2):]
-            spd_mask_2half = self.spd_mask[int(np.size(self.pol_bin_resample)/2):]
-            dwell_1half = npg.aggregate(pol_bin_1half[spd_mask_1half], temporal_bin_length, size=nspatial_bins)
-            dwell_2half = npg.aggregate(pol_bin_2half[spd_mask_2half], temporal_bin_length, size=nspatial_bins)
+    def generate_dwell_map_PlusMaze(self, fdir, fn, smooth='boxcar', temporal_bin_length=0.02):
+        # in this method, temperal bin is not deliberately modified, which is the frame interval. 20ms or 16.67ms
+        self.mouse_pos_bin = ( (self.mouse_pos+1.5)/2 ).astype(int)
+        
+        self.dwell_map = np.zeros((29,29))
+        for pos_bin in self.mouse_pos_bin:
+            if 0<=pos_bin[0]<29 and 0<=pos_bin[1]<29:
+                self.dwell_map[28-pos_bin[1],pos_bin[0]] += temporal_bin_length      # reverse between img(X,Y) and martix(row,column);  flip for matplot
+        
+        self.dwell_map_spdmasked = np.zeros((29,29))
+        for pos_bin in self.mouse_pos_bin[self.spd_mask]:
+            if 0<=pos_bin[0]<29 and 0<=pos_bin[1]<29:
+                self.dwell_map_spdmasked[28-pos_bin[1],pos_bin[0]] += temporal_bin_length
+        
+        self.dwell_map_smooth = boxcar_smooth_2d(self.dwell_map, boxcar_width = 3)
+        self.dwell_map_spdmasked_smooth = boxcar_smooth_2d(self.dwell_map_spdmasked, boxcar_width = 3)
 
-            if smooth == 'boxcar':
-                self.dwell_smo = boxcar_smooth_1d_circular(dwell)
-                self.dwell_1half_smo = boxcar_smooth_1d_circular(dwell_1half)
-                self.dwell_2half_smo = boxcar_smooth_1d_circular(dwell_2half)
-            else:
-                print('for other type of kernels... to be continue...')
-            
-            fig = plt.figure(figsize=(5,15))
-            ax1 = fig.add_subplot(311)
-            ax1.set_title('spd check', fontsize=self.fontsize*1.3)
-            ax1.hist(self.inst_spd, range = (0,70), bins = 100)
-            spd_bin_max = np.max(np.bincount(self.inst_spd.astype('uint'), minlength=100))
-            ax1.plot(([np.median(self.inst_spd)]*2), [0, spd_bin_max*0.7], color='k')
-            ax1.set_xlabel('animal spd cm/s', fontsize=self.fontsize)
-            ax1.set_ylabel('N 20ms teporal bins', fontsize=self.fontsize)
-            ax2 = fig.add_subplot(312)
-            ax2.set_title('animal spatial occupancy', fontsize=self.fontsize)
-            ax2.plot(np.linspace(1, nspatial_bins, num=nspatial_bins, dtype='int'), self.dwell_smo, color='k')
-            ax2.plot(np.linspace(1, nspatial_bins, num=nspatial_bins, dtype='int'), self.dwell_1half_smo, color='r')
-            ax2.plot(np.linspace(1, nspatial_bins, num=nspatial_bins, dtype='int'), self.dwell_2half_smo, color='b')
-            ax2.set_ylim(0, np.max(self.dwell_smo)*1.1)
-            ax2.set_xlabel('spatial degree-bin', fontsize=self.fontsize)
-            ax2.set_ylabel('occupancy in sec', fontsize=self.fontsize)
-            ax3 = fig.add_subplot(313)
-            ax3.scatter(self.pol, np.linspace(0, self.total_time, num=np.size(self.pol)), c='k', s=0.1)
-            ax3.set_title('animal trajectory', fontsize=self.fontsize*1.3)
-            ax3.set_xlabel('position in radius degree.', fontsize=self.fontsize)
-            ax3.set_ylabel('time in sec', fontsize=self.fontsize)
-
-            
+        fig, axs = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
+        axs[0].set_box_aspect(1)
+        axs[0].set_title('Speed', fontsize=self.fontsize*1.3)
+        axs[0].hist(self.inst_spd, range = (0,70), bins = 100)
+        axs[0].set_xlim(0,70)
+        spd_bin_max = np.max(np.bincount(self.inst_spd.astype('uint'), minlength=100))
+        axs[0].plot(([np.median(self.inst_spd)]*2), [0, spd_bin_max*0.7], color='k')
+        axs[0].set_xlabel('animal spd cm/s', fontsize=self.fontsize)
+        axs[0].set_ylabel('N 20ms temporal bins', fontsize=self.fontsize)
+        
+        axs[1].set_title('Trajectory', fontsize=self.fontsize*1.3)
+        axs[1].plot(self.mouse_pos[:,0], self.mouse_pos[:,1])
+        axs[1].set_aspect(1, adjustable='box')
+        axs[1].set_xlim(0,58)
+        axs[1].set_ylim(0,58)
+        axs[1].set_xlabel('cm', fontsize=self.fontsize)
+        axs[1].set_ylabel('cm', fontsize=self.fontsize)
+        
+        heatmap = self.dwell_map_smooth.copy()
+        heatmap[heatmap==0] = np.nan
+        axs[2].set_title('Dwell Map', fontsize=self.fontsize*1.3)
+        pcm = axs[2].pcolormesh(heatmap, cmap='jet')
+        axs[2].set_aspect(1, adjustable='box')
+        axs[2].set_xlabel('2cm bin', fontsize=self.fontsize)
+        axs[2].set_ylabel('2cm bin', fontsize=self.fontsize)
+        fig.colorbar(pcm, ax=axs[2], label='occupancy in sec')
+        
+        plt.savefig(fdir/fn/'plot'/'Dwell.svg')    
 
         
-
+#%%Class unit
  # ----------------------------------------------------------------------------
  #                  Classes unit
  # ----------------------------------------------------------------------------
@@ -1363,3 +1157,34 @@ class Unit1DCircular(Unit):
 
             
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            
+    
+
+        
+        
