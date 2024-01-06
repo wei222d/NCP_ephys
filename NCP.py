@@ -38,7 +38,12 @@ About Map Axis start:
     dlc_files  mouse_pos  mouse_pose_bin  dwell_map      left up
     
     head direction             head up (forward) ↑ = 0 degree 0 radian,  head down (backward) ↓ = ±180 degree, ±π radian
+
+About X,Y indices:
+    dlc_files mouse_pos mouse_bin   (X,Y)
     
+    dwell_map firing_map rate_map 
+    place_field  PF_COM              (Y,X)  for  (row,column)
 
 '''
 #%% Main Bundle
@@ -72,9 +77,7 @@ from scipy import optimize, ndimage, interpolate, stats, signal
 from pathlib import Path
 from tkinter import filedialog
 
-import matplotlib.patches 
-import matplotlib.path
-
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 #%% Basic Functions
 # ----------------------------------------------------------------------------
@@ -88,7 +91,15 @@ def load_files_newcam(fdir, fn, dlc_tail, tags):
     spike_clusters = np.load(fdir/fn/'spike_clusters.npy')
     clusters_info = pd.read_csv(fdir/fn/'cluster_info.tsv', sep='\t')
     esync_timestamps_load = np.load(fdir/fn/(fn+'Frame_timestamps'+'.npy'))  
-
+    
+    waveforms = {'raw':0, 'spike_id':0, 'cluster':0, 'timestamp':0, 'channel':0, 'tetrode':0}
+    waveforms['raw'] = np.load(fdir/fn/'_phy_spikes_subset.waveforms.npy')[:,11:71,:]  # (randomized select?) n waveforms, 60 for sample length, 16 for 16 channels
+    waveforms['spike_id'] = np.load(fdir/fn/'_phy_spikes_subset.spikes.npy')          # waveform belong to which spike  (in order, 1st spike 2nd spike 3rd spike...)
+    waveforms['cluster'] = spike_clusters[waveforms['spike_id']]                        # this spike belong to which cluster
+    waveforms['timestamp'] = spike_times[waveforms['spike_id']]                         # when happen
+    waveforms['channel'] = np.load(fdir/fn/'_phy_spikes_subset.channels.npy')      # waveform happen on which channel, though we use tetrode, only 4 channel contain the useful information, but phy out put continuous 12 channel info
+    waveforms['tetrode'] = waveforms['channel'][:,0]//4                                 # first in channel must be the most significant channel which used to calculate the id of tetrode
+    
     if len(list((fdir/fn).glob('*Signal_on_timestamps.*')))==1:
         signal_on_timestamps_load = np.load(fdir/fn/(fn+'Signal_on_timestamps'+'.npy'))
 
@@ -169,9 +180,9 @@ def load_files_newcam(fdir, fn, dlc_tail, tags):
     
 
     if len(list((fdir/fn).glob('Signal_on_timestamps_*.*')))==1:
-        return spike_clusters2, timestamps, clusters_info, vsync, esync_timestamps, dlc_files, frame_state, signal_on_timestamps
+        return spike_clusters2, timestamps, clusters_info, waveforms, vsync, esync_timestamps, dlc_files, frame_state, signal_on_timestamps
     else:
-        return spike_clusters2, timestamps, clusters_info, vsync, esync_timestamps, dlc_files, frame_state
+        return spike_clusters2, timestamps, clusters_info, waveforms, vsync, esync_timestamps, dlc_files, frame_state
 
 def sync_check(esync_timestamps, vsync, tags):                            
     if tags['Nses'] == 1:
@@ -267,11 +278,6 @@ def apply_speed_mask(spike_clusters, timestamps, spiketime, ses, tags, temporal_
         return (spike_clusters_run,timestamps_run,spiketime_run, spike_clusters_stay,timestamps_stay,spiketime_stay)
     else:
         raise Exception('Only spatial related experiment data should be applied with spd mask.')
-
-def spatial_information_skaggs(timestamps, ratemap, dwell_smo):                                 # wait for modify
-    global_mean_rate = round(np.size(timestamps)/np.sum(dwell_smo), 4)
-    spatial_info = round(np.nansum((dwell_smo/np.sum(dwell_smo)) * (ratemap/global_mean_rate) * np.log2((ratemap/global_mean_rate))), 4)
-    return spatial_info, global_mean_rate
 
 #%% Functions on 1D Env
 # ----------------------------------------------------------------------------
@@ -631,8 +637,9 @@ class DetourSession(object):
         axs[0].set_title('Speed', fontsize=self.fontsize*1.3)
         axs[0].hist(self.inst_spd, range = (0,70), bins = 100)
         axs[0].set_xlim(0,70)
-        spd_bin_max = np.max(np.bincount(self.inst_spd.astype('uint'), minlength=100))
-        axs[0].plot(([np.median(self.inst_spd)]*2), [0, spd_bin_max*0.7], color='k')
+        # spd_bin_max = np.max(np.bincount(self.inst_spd.astype('uint'), minlength=100))
+        # axs[0].plot(([np.median(self.inst_spd)]*2), [0, spd_bin_max*0.7], color='k')
+        axs[0].axvline(x=np.median(self.inst_spd), color='black', linestyle='dashed', linewidth=2, label='median instant speed')
         axs[0].set_xlabel('animal spd cm/s', fontsize=self.fontsize)
         axs[0].set_ylabel('N 20ms temporal bins', fontsize=self.fontsize)
         
@@ -666,13 +673,13 @@ class Unit(object):
     def __init__(self, spike_pack, clusters_info, tags):
         self.KScluid = clusters_info.loc['cluster_id']
         self.quality = clusters_info.loc['group']
-        self.KS_quality = clusters_info.loc['KSLabel']
-        self.type = 'unknown'#IN or PC  
+        self.KSquality = clusters_info.loc['KSLabel']
+        self.type = 'unknown'                                #IN or PC  
         self.meanwaveform = False
         self.channel = clusters_info.loc['ch']
+        self.tetrode = self.channel//4
         self.tags = tags
-        
-        
+                
         if self.channel < 32:
             self.loc = 'right'
         else:
@@ -723,7 +730,7 @@ class Unit(object):
         self.mean_rate_run = np.size(self.timestamps_run) / (np.sum(ses.spd_mask)/ses.sync_rate)
         self.mean_rate_stay = np.size(self.timestamps_stay) / (ses.total_time - (np.sum(ses.spd_mask)/ses.sync_rate))
     
-    def generate_rate_map_PlusMaze(self, ses):
+    def get_rate_map_PlusMaze(self, ses):
         # this rate map is calculated in running state
         mouse_pos = ses.get['mouse_pos'](self.spiketime_run)
         mouse_pos_bin = ( (mouse_pos+1.5)/2 ).astype(int)
@@ -802,6 +809,18 @@ class Unit(object):
                 self.place_field_map[bins[0],bins[1]] = field_id
             field_id +=1
 
+    def get_place_field_COM(self):
+        self.place_field_COM = []
+        for place_field in self.place_field:
+            COM = [0,0]
+            sum_rate_field = 0
+            for bins in place_field:
+                COM[0] += bins[0]*self.rate_map_smooth[bins[0],bins[1]]
+                COM[1] += bins[1]*self.rate_map_smooth[bins[0],bins[1]]
+                sum_rate_field += self.rate_map_smooth[bins[0],bins[1]]
+            COM = [COM[0]/sum_rate_field, COM[1]/sum_rate_field]
+            self.place_field_COM.append(COM)
+
     def get_place_field_ellipse_fit(self):
         
         def get_place_field_contour(place_field):
@@ -868,27 +887,26 @@ class Unit(object):
         # for now all using un-smoothed data to calculate, but with speed mask
         np.seterr(all='ignore')
         self.spatial_info = np.nansum((ses.dwell_map_spdmasked/np.sum(ses.dwell_map_spdmasked)) * (self.rate_map/self.mean_rate_run) * np.log2((self.rate_map/self.mean_rate_run)))
-        self.spatial_info = round(self.spatial_info, 4)
         np.seterr(all='warn')
         
-    def shuffle_test_PlusMaze(self, u, ses, experiment_tag, p_threshold=0.01):
+    def spatial_info_shuffle_PlusMaze(self, ses):
         # Units must pass shuffle test and either their spa_info >1 or max_pos_info >0.4
         
         # if apply to other maze, change the part of rate map, that part are defined by maze structrue and binning set up
         
-        time_range = [0,40]
-        shuffle_chunk_size = 1
+        time_range = [4,40]
+        shuffle_chunk_size = 6
         shuffle_times = 1000
         
         time_offset = np.random.uniform(time_range[0], time_range[1], shuffle_times)
         time_offset[int(len(time_offset)/2):] *= -1                 # second half minus the offset
         time_offset[int(len(time_offset)/2):] += ses.total_time     # make sure the tiem is positive
         
-        spatial_info_pool = np.zeros(shuffle_times)
+        self.spatial_info_pool = np.zeros(shuffle_times)
         
         for i in range(shuffle_times):
             # add time offset
-            shuffled_spiketime = unit.spiketime_run + time_offset[i]
+            shuffled_spiketime = self.spiketime_run + time_offset[i]
             for j in range(np.size(shuffled_spiketime ,0)):
                 if shuffled_spiketime[j] > ses.total_time:
                     shuffled_spiketime[j] -= ses.total_time
@@ -917,19 +935,12 @@ class Unit(object):
             shuffled_rate_map = np.divide(shuffled_firing_map, ses.dwell_map)       
             shuffled_firing_map_smooth = boxcar_smooth_2d(shuffled_firing_map)
             shuffled_rate_map_smooth = np.divide(shuffled_firing_map_smooth, ses.dwell_map_smooth)
-            shuffled_spatial_info = np.nansum((ses.dwell_map_spdmasked/np.sum(ses.dwell_map_spdmasked)) * (shuffled_rate_map/unit.mean_rate_run) * np.log2((shuffled_rate_map/unit.mean_rate_run)))
+            shuffled_spatial_info = np.nansum((ses.dwell_map_spdmasked/np.sum(ses.dwell_map_spdmasked)) * (shuffled_rate_map/self.mean_rate_run) * np.log2((shuffled_rate_map/self.mean_rate_run)))
             shuffled_spatial_info = round(shuffled_spatial_info, 4)
             np.seterr(all='warn')
             ###########################################
-            spatial_info_pool[i] = shuffled_spatial_info
-            
-            
-            
-            
-            unit.spatial_info
-        
-        
-        
+            self.spatial_info_pool[i] = shuffled_spatial_info
+       
     def get_positional_information_olypher_PlusMaze(self, ses):
         np.seterr(all='ignore')
 
@@ -970,129 +981,150 @@ class Unit(object):
         else:
             raise Exception('you might used wrong method.')
     
-    def report(self, ses, fdir, fn, unit_id):
+    def report(self, ses, fdir, fn, unit_id, spatial_info_pool):
         
-        fig, axs = plt.subplots(1, 3, figsize=(16, 5), constrained_layout=True)
+        fig, axs = plt.subplots(2, 3, figsize=(16, 9), tight_layout=True)
+        # plt.subplots_adjust(wspace=0.5, hspace=0.5)
         
+        # rate map
         heatmap = self.rate_map_smooth.copy()
-        axs[0].set_title('Firing Rate Map', fontsize=self.tags['fontsize']*1.3)
-        pcm = axs[0].pcolormesh(heatmap, cmap='jet')
-        axs[0].set_aspect(1, adjustable='box')
-        axs[0].set_xlabel('2cm bin', fontsize=self.tags['fontsize'])
-        axs[0].set_ylabel('2cm bin', fontsize=self.tags['fontsize'])
-        axs[0].invert_yaxis()
-        fig.colorbar(pcm, ax=axs[0], label='firing rate (spike/sec)')
+        axs[0,0].set_title('Firing Rate Map', fontsize=self.tags['fontsize']*1.3)
+        pcm = axs[0,0].pcolormesh(heatmap, cmap='jet')
+        axs[0,0].set_aspect(1, adjustable='box')
+        axs[0,0].set_xlabel('2cm bin', fontsize=self.tags['fontsize'])
+        axs[0,0].set_ylabel('2cm bin', fontsize=self.tags['fontsize'])
+        axs[0,0].invert_yaxis()
+        fig.colorbar(pcm, ax=axs[0,0], label='firing rate (spike/sec)')
         # for parameter in self.place_field_ellipse_parameter:
         #     h,k,a,b,theta = parameter[0],parameter[1],parameter[2],parameter[3],parameter[4]
         #     ellipse = matplotlib.patches.Ellipse((k, h), a, b, angle=theta, edgecolor='w', facecolor='none', linestyle='--', linewidth=2)
         #     axs[0].add_patch(ellipse)
-        axs[0].text(15, 34, 'Spatial Information: '+str(self.spatial_info), fontsize=12, ha='center', va='center')
-        
         scale_factor= 10
         place_field_mapx10 = np.repeat(np.repeat(self.place_field_map, scale_factor, axis=0), scale_factor, axis=1)     
-        axs[0].contour(place_field_mapx10, levels=[-0.9], colors='white', linewidths=2, extent=[0,29,0,29])
+        axs[0,0].contour(place_field_mapx10, levels=[-0.9], colors='white', linewidths=2, extent=[0,29,0,29])
+        for i in range(len(self.place_field)):
+            axs[0,0].plot(self.place_field_COM[i][1], self.place_field_COM[i][0], color='black', marker='+', markersize=15, label='COM',linewidth=2)
         
-    
+        # trajectory
         spike_mouse_pos = ses.get['mouse_pos'](self.spiketime_run)
-        axs[1].set_title('Trajectory', fontsize=self.tags['fontsize']*1.3)
-        axs[1].plot(ses.mouse_pos[:,0], ses.mouse_pos[:,1])
-        axs[1].scatter(spike_mouse_pos[:,0],spike_mouse_pos[:,1], marker='o', s=4, color='black', zorder=2)        
-        axs[1].set_aspect(1, adjustable='box')
-        axs[1].set_xlim(0,58)
-        axs[1].set_ylim(0,58)
-        axs[1].set_xlabel('cm', fontsize=self.tags['fontsize'])
-        axs[1].set_ylabel('cm', fontsize=self.tags['fontsize'])
-        axs[1].invert_yaxis()
+        axs[0,1].set_title('Trajectory', fontsize=self.tags['fontsize']*1.3)
+        axs[0,1].plot(ses.mouse_pos[:,0], ses.mouse_pos[:,1])
+        axs[0,1].scatter(spike_mouse_pos[:,0],spike_mouse_pos[:,1], marker='o', s=4, color='black', zorder=2)        
+        axs[0,1].set_aspect(1, adjustable='box')
+        axs[0,1].set_xlim(0,58)
+        axs[0,1].set_ylim(0,58)
+        axs[0,1].set_xlabel('cm', fontsize=self.tags['fontsize'])
+        axs[0,1].set_ylabel('cm', fontsize=self.tags['fontsize'])
+        axs[0,1].invert_yaxis()
         
+        #positional information
         heatmap2 = self.positional_info.copy()
         heatmap2[ses.dwell_map_smooth==0] = np.nan     # if mouse haven't dwellen in this place, assign nan
-        axs[2].set_title('Positional Information', fontsize=self.tags['fontsize']*1.3)
-        pcm = axs[2].pcolormesh(heatmap2, cmap='jet')
-        axs[2].set_aspect(1, adjustable='box')
-        axs[2].set_xlabel('2cm bin', fontsize=self.tags['fontsize'])
-        axs[2].set_ylabel('2cm bin', fontsize=self.tags['fontsize'])
-        axs[2].invert_yaxis()
-        fig.colorbar(pcm, ax=axs[2], label='positional information')
+        axs[0,2].set_title('Positional Information', fontsize=self.tags['fontsize']*1.3)
+        pcm = axs[0,2].pcolormesh(heatmap2, cmap='jet')
+        axs[0,2].set_aspect(1, adjustable='box')
+        axs[0,2].set_xlabel('2cm bin', fontsize=self.tags['fontsize'])
+        axs[0,2].set_ylabel('2cm bin', fontsize=self.tags['fontsize'])
+        axs[0,2].invert_yaxis()
+        fig.colorbar(pcm, ax=axs[0,2], label='positional information')
         
-        plt.savefig(  fdir/fn/'plot'/ ('Unit'+str(unit_id)+'.svg')  )
-        plt.close()
-                       
-    def get_mean_waveforms(self, extra):
-        #to properly use this, I extract waveforms from phy2 with extract-waveforms in command prompt.
-        # and, the __init__.py is modified with max_nspikes=2000, nchannels=4, though it turns out 12chs still.
-        if self.tags['extract waveforms'] is not True:
-            raise Exception('waveforms are not extracted.')
-        else:
-            waveforms = extra['waveforms'][np.where(extra['waveforms clusters'] == self.cluid)]
-            mean_waveforms = np.mean(waveforms, axis=0)[:,:4]
-            self.mean_waveforms = mean_waveforms
-                 
-    def get_mean_waveforms_tagging(self, extra):
-        # it depends on the key() you have written in dict extra.
-        if self.loc == 'right':
-            waveforms = extra['wavefroms right tagging'][0]
-            waveforms_clusters = extra['wavefroms right tagging'][1]
-        elif self.loc == 'left':
-            waveforms = extra['wavefroms left tagging'][0]
-            waveforms_clusters = extra['wavefroms left tagging'][1]
-        else:
-            raise Exception('unit location not found.')
-        waveforms = waveforms[np.where(waveforms_clusters == self.cluid)]
-        mean_waveforms = np.mean(waveforms, axis=0)[:,:4]
-        self.mean_waveforms_tagging = mean_waveforms
+        # spatial information shuffle test
+        spatial_info_pool_sorted=np.sort(np.append(spatial_info_pool,self.spatial_info))
+        order=np.where(spatial_info_pool_sorted==self.spatial_info)[0][0]
+        self.over_shuffle_percentage = order/len(spatial_info_pool) 
         
-    def opto_inhibitory_tagging(self, ses, signal_on_time, mode, p_threshold=0.01, laser_on_sec=20,
-                                laser_off_sec=20, shuffle_range_sec=20, check_waveforms=False):
-        # it takes laser on as start of a cycle.
-        if self.Nses == 1:
-            signal_on_temp = signal_on_time
-        elif 'multi tagging session' in self.tags.keys():
-            # well, make it simple and silly but works.
-            if self.loc == 'right':
-                ses = ses[0]
-            elif self.loc == 'left':
-                ses = ses[1]
-            else:
-                raise Exception('units location is not found.')
-            signal_on_temp = signal_on_time[ses.id]
-        else:
-            signal_on_temp = signal_on_time[ses.id]
-        if self.tags['theme'] == 'spatial':
-            spike_time = np.concatenate((self.spiketime[ses.id], self.spiketime_stay[ses.id]))
-        else:
-            spike_time = self.spiketime
+        axs[1,0].hist(spatial_info_pool, bins=40)
+        axs[1,0].axvline(x=self.spatial_info, color='red', linestyle='dashed', linewidth=2, label='Spatial Information')
+        axs[1,0].set_title('Spatial Info. Shuffle test', fontsize=self.tags['fontsize'])
+        axs[1,0].set_aspect(1./axs[1,0].get_data_ratio(), adjustable='box')
+        axs[1,0].set_xlabel('spatial information', fontsize=self.tags['fontsize'])
+        axs[1,0].set_ylabel('count', fontsize=self.tags['fontsize'])
+        axs[1,0].text(0.5, -0.2, 'Spatial Information: '+str(round(self.spatial_info, 4))+'  percentage='+ str(round(self.over_shuffle_percentage, 3)), fontsize=12, ha='center', va='center', transform=axs[1,0].transAxes)
+          
+        # waveforms
+        x = np.linspace(0,2,60)
+        sub_axs0 = inset_axes(axs[1,1], width='45%', height='45%', loc='upper left')
+        sub_axs1 = inset_axes(axs[1,1], width='45%', height='45%', loc='upper right')
+        sub_axs2 = inset_axes(axs[1,1], width='45%', height='45%', loc='lower left')
+        sub_axs3 = inset_axes(axs[1,1], width='45%', height='45%', loc='lower right')
+        sub_axs0.plot(x, self.mean_waveforms[:,0])
+        sub_axs1.plot(x, self.mean_waveforms[:,1])
+        sub_axs2.plot(x, self.mean_waveforms[:,2])
+        sub_axs3.plot(x, self.mean_waveforms[:,3])
+        sub_axs0.set_ylim(-1200,300)
+        sub_axs1.set_ylim(-1200,300)
+        sub_axs2.set_ylim(-1200,300)
+        sub_axs3.set_ylim(-1200,300)
+        sub_axs0.xaxis.set_visible(False)
+        sub_axs1.xaxis.set_visible(False)
+        sub_axs1.yaxis.set_visible(False)
+        sub_axs3.yaxis.set_visible(False)
             
+        axs[1,1].set_aspect(1, adjustable='box')
+        axs[1,1].axis('off')
+        axs[1,1].set_title('Waveforms', fontsize=self.tags['fontsize'])
+        axs[1,1].set_xlabel('ms', fontsize=self.tags['fontsize'])
+        axs[1,1].set_ylabel('uV? sample?', fontsize=self.tags['fontsize'])
         
-        if mode == 'ranksum':# in ranksum test mode, shuffle range is not used.
-            on_spk_count = []
-            off_spk_count = []
-            for i in range(np.size(signal_on_temp)):
-                spike_time_temp = spike_time[np.where(spike_time < (signal_on_temp[i] + laser_on_sec))]
-                spike_time_temp = spike_time_temp[np.where(spike_time_temp > signal_on_temp[i])]
-                on_spk_count.append(np.size(spike_time_temp))
-                spike_time_temp2 = spike_time[np.where(spike_time < (signal_on_temp[i] + (laser_on_sec+laser_off_sec)))]
-                spike_time_temp2 = spike_time_temp2[np.where(spike_time_temp2 > (signal_on_temp[i] + laser_on_sec))]
-                off_spk_count.append(np.size(spike_time_temp2))
-            statistic, pvalue = stats.ranksums(on_spk_count, off_spk_count, alternative='less')
-            if pvalue < p_threshold:
-                print('clu{} is positive, p-value'.format(self.cluid), round(pvalue,5))
-                self.opto_tag = 'positive'
-            # emmm...how to deal with margitial?
-            else:
-                print('clu{} is negative, p-value'.format(self.cluid), round(pvalue,5))
-                self.opto_tag = 'negative'
-            self.tagging_p = pvalue
-        elif mode == 'shuffle':
-            raise Exception('shuffle test is not finished yet')
-            # 1000times, 0.01
-            pass            
-        else:
-            raise Exception('Wrong mode or the mode has not been coded.')
+        # ax 
+        axs[1,2].set_aspect(1, adjustable='box')
         
-        if check_waveforms == True:
-            data = np.vstack((self.mean_waveforms[:,0], self.mean_waveforms_tagging[:, 0]))
-            r = np.corrcoef(data)
-            self.tagging_waveforms_r = r[0,1]
-
+        plt.savefig(  fdir/fn/'plot'/ ('Unit'+str(self.id)+'.svg')  )
+        plt.close()
+                             
+    def get_mean_waveforms(self, waveforms):
+        #to properly use this, I extract waveforms from phy2 with 'extract-waveforms' in command prompt.
+        # and, the __init__.py is modified with max_nspikes=2000, nchannels=4, though it turns out 12chs still.
+     
+        unit_KSchannels = waveforms['channel'][np.where(waveforms['cluster'] == self.KScluid)][0]
+        unit_waveforms_16ch = waveforms['raw'][np.where(waveforms['cluster'] == self.KScluid)]
+        self.waveforms = np.zeros([unit_waveforms_16ch.shape[0], 60, 4])
+        for ich in range(4):
+            self.waveforms[:,:,ich] = unit_waveforms_16ch[:,:,np.where(unit_KSchannels == (self.tetrode*4+ich))[0][0]]
+        
+        self.mean_waveforms = np.mean(self.waveforms, axis=0)
+                 
     def plot_PSTH(self, ses):
         raise Exception('Not done yet.')
+    
+    
+#%% Class LFP
+ # ----------------------------------------------------------------------------
+ #                  Classes LFP
+ # ----------------------------------------------------------------------------        
+        
+class LFP(object):
+    def __init__(self, fdir, fn, esync_timestamps, channel, tags):
+        
+        nsx = brpylib.NsxFile(str(fdir/fn/(fn+'.ns6')))
+        raw_data = nsx.getdata()['data'][0]
+        nsx.close()
+        
+        if channel == 'mean':
+            pass
+        else:
+            channel_data = raw_data[channel]
+            channel_data = channel_data[esync_timestamps[0]:esync_timestamps[-1]+1]
+            tags['sync_rate']
+        
+        
+        self.channel = clusters_info.loc['ch']
+        self.tetrode = self.channel//4
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        
