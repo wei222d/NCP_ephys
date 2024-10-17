@@ -47,32 +47,20 @@ About X,Y indices:
 
 '''
 #%% Main Bundle
-
-
 # ----------------------------------------------------------------------------
 #    LOTS OF THINGS TO BE DONE.
 # ----------------------------------------------------------------------------
-
 # later, mind if there are some nans in DLC files.
-# jumpy detection, or smooth, Kalman Filter!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# everything is function of time. How to verify the result after spline-interp of xy?? make a new video?
-
-# waveform putative IN or PCs. Then optotag, R of waveforms of units.
+# jumpy detection, or smooth, Kalman Filter!
 # in class unit, furthur work with its quality check like L-ratio and others. May need to load more files from KS&phy2.
-
-# Master8 got a bit faster or DAQ slower? e_intervals are mostly 14998 and none greater than 15000. Errors are accumulating!!!!!!!!!!!!!!!!!!!
-
 # LFP&spike, their binding do not need anything related to videos. Well except for spd thresh, or maybe some relation with its position.
-# func & methods for 2D exp. , smoothing kernels. More and More
 # decoding. some bayesian?
-
-
 
 # ----------------------------------------------------------------------------
 #                  Packages 
 # ----------------------------------------------------------------------------
 
-import brpylib, time, random, pickle, cv2, numpy as np, pandas as pd, matplotlib.pyplot as plt, numpy_groupies as npg
+import brpylib, time, random, pickle, cv2, pywt, numpy as np, pandas as pd, matplotlib.pyplot as plt, numpy_groupies as npg
 from scipy import optimize, ndimage, interpolate, stats, signal
 from pathlib import Path
 from tkinter import filedialog
@@ -90,7 +78,8 @@ def load_files_newcam(fdir, fn, dlc_tail, tags):
     spike_times = np.squeeze(spike_times)# delete that stupid dimension.
     spike_clusters = np.load(fdir/fn/'spike_clusters.npy')
     clusters_info = pd.read_csv(fdir/fn/'cluster_info.tsv', sep='\t')
-    esync_timestamps_load = np.load(fdir/fn/(fn+'Frame_timestamps'+'.npy'))  
+    esync_timestamps_load = np.load(fdir/fn/(fn+'_Frame_timestamps'+'.npy'))
+    
     
     waveforms = {'raw':0, 'spike_id':0, 'cluster':0, 'timestamp':0, 'channel':0, 'tetrode':0}
     waveforms['raw'] = np.load(fdir/fn/'_phy_spikes_subset.waveforms.npy')[:,11:71,:]  # (randomized select?) n waveforms, 60 for sample length, 16 for 16 channels
@@ -100,8 +89,8 @@ def load_files_newcam(fdir, fn, dlc_tail, tags):
     waveforms['channel'] = np.load(fdir/fn/'_phy_spikes_subset.channels.npy')      # waveform happen on which channel, though we use tetrode, only 4 channel contain the useful information, but phy out put continuous 12 channel info
     waveforms['tetrode'] = waveforms['channel'][:,0]//4                                 # first in channel must be the most significant channel which used to calculate the id of tetrode
     
-    if len(list((fdir/fn).glob('*Signal_on_timestamps.*')))==1:
-        signal_on_timestamps_load = np.load(fdir/fn/(fn+'Signal_on_timestamps'+'.npy'))
+    if len(list((fdir/fn).glob('*_Signal_on_timestamps.*')))==1:
+        signal_on_timestamps_load = np.load(fdir/fn/(fn+'_Signal_on_timestamps'+'.npy'))
 
     if tags['Nses'] == 1:
         timestamps = spike_times
@@ -425,24 +414,28 @@ def cal_rotational_corrcoef(ratemap1, ratemap2, bin_increment=3, nspatial_bins=3
 # ----------------------------------------------------------------------------
 def pixel_to_cm_PlusMaze(dlc_files, nodes_set, fdir, fn):
     
+    # kernal_size = 40
+    kernal_half_size = 20
+    search_size = 50
     #### Kernals ####
+    
     kernal = {'LU':0, 'LD':0, 'RU':0, 'RD':0, 'anti_LU':0, 'anti_LD':0, 'anti_RU':0, 'anti_RD':0}
-    kernal['LU'] = np.ones((100,100)) * -1
-    kernal['LD'] = np.ones((100,100)) * -1
-    kernal['RU'] = np.ones((100,100)) * -1
-    kernal['RD'] = np.ones((100,100)) * -1
-    kernal['LU'][ 0: 50, 0: 50] = 1
-    kernal['LD'][50:100, 0: 50] = 1
-    kernal['RU'][ 0: 50,50:100] = 1
-    kernal['RD'][50:100,50:100] = 1
-    kernal['anti_LU'] = np.ones((100,100))
-    kernal['anti_LD'] = np.ones((100,100))
-    kernal['anti_RU'] = np.ones((100,100))
-    kernal['anti_RD'] = np.ones((100,100))
-    kernal['anti_LU'][ 0: 50, 0: 50] = -1
-    kernal['anti_LD'][50:100, 0: 50] = -1
-    kernal['anti_RU'][ 0: 50,50:100] = -1
-    kernal['anti_RD'][50:100,50:100] = -1
+    kernal['LU'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 )) * -1
+    kernal['LD'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 )) * -1
+    kernal['RU'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 )) * -1
+    kernal['RD'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 )) * -1
+    kernal['LU'][ 0: kernal_half_size, 0: kernal_half_size] = 1
+    kernal['LD'][kernal_half_size:kernal_half_size*2 , 0: kernal_half_size] = 1
+    kernal['RU'][ 0: kernal_half_size,kernal_half_size:kernal_half_size*2 ] = 1
+    kernal['RD'][kernal_half_size:kernal_half_size*2 ,kernal_half_size:kernal_half_size*2 ] = 1
+    kernal['anti_LU'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 ))
+    kernal['anti_LD'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 ))
+    kernal['anti_RU'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 ))
+    kernal['anti_RD'] = np.ones((kernal_half_size*2 ,kernal_half_size*2 ))
+    kernal['anti_LU'][ 0: kernal_half_size, 0: kernal_half_size] = -1
+    kernal['anti_LD'][kernal_half_size:kernal_half_size*2 , 0: kernal_half_size] = -1
+    kernal['anti_RU'][ 0: kernal_half_size,kernal_half_size:kernal_half_size*2 ] = -1
+    kernal['anti_RD'][kernal_half_size:kernal_half_size*2 ,kernal_half_size:kernal_half_size*2 ] = -1
 
     ### average frames across the video ###############################################################
     video_path = str(fdir/fn/(fn+'.avi'))
@@ -455,7 +448,7 @@ def pixel_to_cm_PlusMaze(dlc_files, nodes_set, fdir, fn):
     print('this will take long, wait patiently', end='')
     t=time.time()
     frame_count = 0
-    while True: #frame_count<15000
+    while frame_count<1500: #True
         ret, frame = cap.read()
         if not ret:    #检查是否读到帧
             break
@@ -470,16 +463,17 @@ def pixel_to_cm_PlusMaze(dlc_files, nodes_set, fdir, fn):
     cv2.imshow('average_frame', average_frame)
     cv2.waitKey(0)
     
+    ### find corner function ############################################################################
     def get_corner_pos(rough_pos, kernal):
         result = np.ones((height,width))*-9999999
-        if rough_pos[0]<150 or rough_pos[0]>height-150:
+        if rough_pos[0]<(search_size+kernal_half_size) or rough_pos[0]>height-(search_size+kernal_half_size):
             raise ValueError('rough pos is set too close to boundary')
-        if rough_pos[1]<150 or rough_pos[1]>width-150:
+        if rough_pos[1]<(search_size+kernal_half_size) or rough_pos[1]>width-(search_size+kernal_half_size):
             raise ValueError('rough pos is set too close to boundary')
             
-        for ih in range(rough_pos[0]-100,rough_pos[0]+100):              # 100 for search area
-            for iw in range(rough_pos[1]-100,rough_pos[1]+100):
-                roi = average_frame[ih-50:ih+50,iw-50:iw+50]             # 80 for kernal size
+        for ih in range(rough_pos[0]-search_size,rough_pos[0]+search_size):              # 100 for search area
+            for iw in range(rough_pos[1]-search_size,rough_pos[1]+search_size):
+                roi = average_frame[ih-kernal_half_size:ih+kernal_half_size,iw-kernal_half_size:iw+kernal_half_size]             # 60 for kernal size
                 result[ih,iw] = np.sum(np.multiply(roi,kernal))
         return (np.where(result==np.max(result))[0][0], np.where(result==np.max(result))[1][0])
     
@@ -489,7 +483,8 @@ def pixel_to_cm_PlusMaze(dlc_files, nodes_set, fdir, fn):
         nodes_set['precise_position'][i] = get_corner_pos(nodes_set['rough_position'][i], kernal[nodes_set['corner_type'][i]])
 
     for i in range(len(nodes_set['name'])):
-        cv2.circle(average_frame, (nodes_set['precise_position'][i][1], nodes_set['precise_position'][i][0]), 5,(255,255,255),-1)
+        cv2.circle(average_frame, (nodes_set['precise_position'][i][1], nodes_set['precise_position'][i][0]), 3,(255,255,255),-1)
+        cv2.circle(average_frame, (nodes_set['rough_position'][i][1], nodes_set['rough_position'][i][0]), kernal_half_size*2, (130,0,0),2)
     print('fitting precise postion takes', time.time()-t)
     
     cv2.namedWindow('average_frame', cv2.WINDOW_NORMAL)
@@ -565,8 +560,8 @@ class DetourSession(object):
                 
     def get_head_direction(self):
         hd_vector = self.rightbulb - self.leftbulb
-        self.hd_radian = np.angle(hd_vector[:,0] + 1j*hd_vector[:,1])   # head up (forward) ↑ = 0 degree 0 radian,  head down (backward) ↓ = ±180 degree
-        self.hd_degree = (self.hd_radian)/(2*np.pi)*180                 # head up (forward) ↑ = 0 radian,  head down (backward) ↓ = ±π radian
+        self.hd_radian = np.angle(hd_vector[:,0] + 1j*hd_vector[:,1])   # head up (forward) ↑ = 0 radian,  head down (backward) ↓ = ±π radian
+        self.hd_degree = (self.hd_radian)/(2*np.pi)*360                 # head up (forward) ↑ = 0 degree 0 radian,  head down (backward) ↓ = ±180 degree
             
     def generate_interpolater(self):
         self.get = {}
@@ -663,6 +658,7 @@ class DetourSession(object):
         fig.colorbar(pcm, ax=axs[2], label='occupancy in sec')
         
         plt.savefig(fdir/fn/'plot'/'Dwell.svg')    
+        plt.savefig(fdir/fn/'plot'/'Dwell.png')    
 
 #%% Class unit
  # ----------------------------------------------------------------------------
@@ -682,8 +678,10 @@ class Unit(object):
                 
         if self.channel < 32:
             self.loc = 'right'
-        else:
+        elif 32<= self.channel < 64:
             self.loc = 'left'
+        else:
+            raise Exception('not coded for higher channel')
 
         if tags['Nses'] == 1:
             # unpacking spike_pack.
@@ -741,9 +739,9 @@ class Unit(object):
                 self.firing_map[pos_bin[1],pos_bin[0]] += 1      # reverse between img(X,Y) and martix(row,column)
         
         np.seterr(all='ignore')
-        self.rate_map = np.divide(self.firing_map, ses.dwell_map)       
+        self.rate_map = np.divide(self.firing_map, ses.dwell_map_spdmasked)
         self.firing_map_smooth = boxcar_smooth_2d(self.firing_map)
-        self.rate_map_smooth = np.divide(self.firing_map_smooth, ses.dwell_map_smooth)
+        self.rate_map_smooth = np.divide(self.firing_map_smooth, ses.dwell_map_spdmasked_smooth)
         
         self.peak_rate = np.nanmax(self.rate_map_smooth)                       # peak rate is selected in smooth map
         
@@ -932,9 +930,7 @@ class Unit(object):
                     shuffled_firing_map[pos_bin[1],pos_bin[0]] += 1      # reverse between img(X,Y) and martix(row,column)
             
             np.seterr(all='ignore')
-            shuffled_rate_map = np.divide(shuffled_firing_map, ses.dwell_map)       
-            shuffled_firing_map_smooth = boxcar_smooth_2d(shuffled_firing_map)
-            shuffled_rate_map_smooth = np.divide(shuffled_firing_map_smooth, ses.dwell_map_smooth)
+            shuffled_rate_map = np.divide(shuffled_firing_map, ses.dwell_map_spdmasked)
             shuffled_spatial_info = np.nansum((ses.dwell_map_spdmasked/np.sum(ses.dwell_map_spdmasked)) * (shuffled_rate_map/self.mean_rate_run) * np.log2((shuffled_rate_map/self.mean_rate_run)))
             shuffled_spatial_info = round(shuffled_spatial_info, 4)
             np.seterr(all='warn')
@@ -1039,7 +1035,7 @@ class Unit(object):
         axs[1,0].set_aspect(1./axs[1,0].get_data_ratio(), adjustable='box')
         axs[1,0].set_xlabel('spatial information', fontsize=self.tags['fontsize'])
         axs[1,0].set_ylabel('count', fontsize=self.tags['fontsize'])
-        axs[1,0].text(0.5, -0.2, 'Spatial Information: '+str(round(self.spatial_info, 4))+'  percentage='+ str(round(self.over_shuffle_percentage, 3)), fontsize=12, ha='center', va='center', transform=axs[1,0].transAxes)
+        axs[1,0].text(0.5, -0.2, 'Spatial Information: '+str(round(self.spatial_info, 4))+'  over '+ str(round(self.over_shuffle_percentage*100, 2))+'%', fontsize=12, ha='center', va='center', transform=axs[1,0].transAxes)
           
         # waveforms
         x = np.linspace(0,2,60)
@@ -1070,6 +1066,7 @@ class Unit(object):
         axs[1,2].set_aspect(1, adjustable='box')
         
         plt.savefig(  fdir/fn/'plot'/ ('Unit'+str(self.id)+'.svg')  )
+        plt.savefig(  fdir/fn/'plot'/ ('Unit'+str(self.id)+'.png')  )
         plt.close()
                              
     def get_mean_waveforms(self, waveforms):
@@ -1087,31 +1084,590 @@ class Unit(object):
     def plot_PSTH(self, ses):
         raise Exception('Not done yet.')
     
-    
 #%% Class LFP
  # ----------------------------------------------------------------------------
  #                  Classes LFP
  # ----------------------------------------------------------------------------        
-        
+'''
+For time variables:
+
+r_s_e:                     ripple_start_end   in 2000Hz Sample point stamp
+ripple_start_end           real world time
+
+t_p_t_p                    2000Hz Sample point stamp
+theta_peak_trough_peak     real world time
+
+'''
 class LFP(object):
-    def __init__(self, fdir, fn, esync_timestamps, channel, tags):
+    def __init__(self, fdir, fn, esync_timestamps, tags):
         
+        self.img_save_path = fdir/fn/'plot'
+        
+        fs = 2000 # don't change this, or you need to change the resample ratio, below is 15
         nsx = brpylib.NsxFile(str(fdir/fn/(fn+'.ns6')))
-        raw_data = nsx.getdata()['data'][0]
+        raw_trace = nsx.getdata()['data'][0]
         nsx.close()
         
-        if channel == 'mean':
-            pass
+        dcstop_b, dcstop_a = signal.butter(2,0.5, btype = 'highpass', output = 'ba', fs = fs)       # deal with DC
+        notch_b, notch_a = signal.butter(1, [49.8,50.2], btype = 'bandstop', output ='ba', fs = fs) # deal with 50Hz AC    
+        
+        if  32<= raw_trace.shape[0] <64 :
+            trace_all_ch = raw_trace[  0:32, esync_timestamps[0]:esync_timestamps[-1]+1:15  ].copy()    # cut the head and tail without sync pulse and convert to fs 2000Hz
+            for i in range(32):                                                                       # filter ephys 32 channels
+                trace_all_ch[i,:] = signal.filtfilt(dcstop_b, dcstop_a, trace_all_ch[i,:])
+                trace_all_ch[i,:] = signal.filtfilt(notch_b, notch_a, trace_all_ch[i,:])                
+                
+            self.trace_all_ch = np.array(trace_all_ch)                                      
+            self.time = np.linspace(0, (np.size(esync_timestamps)-1)/tags['sync_rate'], num=self.trace_all_ch.shape[1])
+            
+        elif  64<= raw_trace.shape[0] :       # bilateral, need to load left and right seperately
+            trace_all_ch = raw_trace[  0:64, esync_timestamps[0]:esync_timestamps[-1]+1:15  ].copy()    # cut the head and tail without sync pulse and convert to fs 2000Hz
+            for i in range(64):                                                                       # filter ephys 64 channels
+                trace_all_ch[i,:] = signal.filtfilt(dcstop_b, dcstop_a, trace_all_ch[i,:])
+                trace_all_ch[i,:] = signal.filtfilt(notch_b, notch_a, trace_all_ch[i,:])        
+            
+            self.trace_all_ch_R = trace_all_ch[:32,:]
+            self.trace_all_ch_L = trace_all_ch[32:,:]
+            self.time = np.linspace(0, (np.size(esync_timestamps)-1)/tags['sync_rate'], num=self.trace_all_ch_R.shape[1])
+            
         else:
-            channel_data = raw_data[channel]
-            channel_data = channel_data[esync_timestamps[0]:esync_timestamps[-1]+1]
-            tags['sync_rate']
+            raise Exception('not coded for higher channel')
+        
+    def SWR_detect(self, channel=None):
+        fs = 2000
+        window_len = 0.017
+        ripplepass_b, ripplepass_a = signal.butter(2,[140,230],btype='bandpass',output='ba',fs=fs)     # bandpass=[140,230]
+        
+        #################### channel select #####################
+        if hasattr(self,'trace_all_ch'):
+            if channel==None:           # default: calculate and take the highest ripple power channel,  Mizuseki et al_2011
+                mean_ripple_power = []
+                for i in range(32):
+                    ripple_trace = signal.filtfilt(ripplepass_b, ripplepass_a, self.trace_all_ch[i,:])    # this method dierctly calculate the power of trace, and average to length
+                    ripple_power = np.sqrt(np.sum(ripple_trace**2/ripple_trace.shape[0])) # root mean square to serve as power
+                    mean_ripple_power.append(ripple_power)
+                    print(f'running:{i+1}/32', end='   ')
+                highest_ripple_power_channel = mean_ripple_power.index(max(mean_ripple_power))
+                
+                # mean_ripple_power = []       
+                # for i in range(32):
+                #     ripple_trace = signal.filtfilt(ripplepass_b, ripplepass_a, self.trace_all_ch[i,:])
+                #     ripple_windows = np.lib.stride_tricks.sliding_window_view(ripple_trace, int(window_len*fs))    # this method calculate the power of a window and then average all window's power
+                #     ripple_power = np.sqrt(np.sum((ripple_windows**2/int(window_len*fs)), axis=1)) # root mean square to serve as power
+                #     mean_ripple_power.append(np.mean(ripple_power))
+                #     print(f'running:{i+1}/32', end='   ')
+                
+                # highest_ripple_power_channel = mean_ripple_power.index(max(mean_ripple_power))
+                
+                self.ripple_channel = highest_ripple_power_channel
+            
+            elif type(channel)==int:
+                self.ripple_channel = channel
+            else:
+                raise ValueError('channel should be int for a 32ch recording')
+                
+        elif hasattr(self,'trace_all_ch_R'):
+            if channel==None:           # default: calculate and take the highest ripple power channel
+                mean_ripple_power_R = []
+                mean_ripple_power_L = []
+                for i in range(32):
+                    ripple_trace_R = signal.filtfilt(ripplepass_b, ripplepass_a, self.trace_all_ch_R[i,:])
+                    ripple_power_R = np.sqrt(np.sum(ripple_trace_R**2/ripple_trace_R.shape[0])) 
+                    mean_ripple_power_R.append(ripple_power_R)
+                    
+                    ripple_trace_L = signal.filtfilt(ripplepass_b, ripplepass_a, self.trace_all_ch_L[i,:])
+                    ripple_power_L = np.sqrt(np.sum(ripple_trace_L**2/ripple_trace_L.shape[0]))
+                    mean_ripple_power_L.append(ripple_power_L)
+                    
+                    print(f'running:{i+1}/32', end='   ')
+                
+                highest_ripple_power_channel_R = mean_ripple_power_R.index(max(mean_ripple_power_R))
+                highest_ripple_power_channel_L = mean_ripple_power_L.index(max(mean_ripple_power_L))
+                self.ripple_channel_R = highest_ripple_power_channel_R
+                self.ripple_channel_L = highest_ripple_power_channel_L+32
+            elif type(channel)==list:
+                self.ripple_channel_R = min(channel)
+                self.ripple_channel_L = max(channel)
+            else:
+                raise ValueError('channel should be a two int list for 64ch recording')
+        
+        ################ ripple detect ####################
+        if hasattr(self,'trace_all_ch'):             # mono lateral recording
+            ripple_trace = signal.filtfilt(ripplepass_b, ripplepass_a, self.trace_all_ch[self.ripple_channel,:])
+            self.ripple_trace = ripple_trace
+            
+            ripple_windows = np.lib.stride_tricks.sliding_window_view(ripple_trace, int(window_len*fs))
+            ripple_power = np.sqrt(np.sum((ripple_windows**2/int(window_len*fs)), axis=1))# root mean square to serve as power, length offset +(window_len*fs-1)
+            ripple_3sd = np.where(ripple_power > np.mean(ripple_power)+3*np.std(ripple_power), 1, 0)# to mark their starts and stops.
+            ripple_7sd = np.where(ripple_power > np.mean(ripple_power)+7*np.std(ripple_power), 1, 0)# artificially mark those peaks. what would happend with large noise?
+            ripple_boolean =  np.concatenate( (np.atleast_1d(np.where(ripple_3sd[0]==1, 1, 0)), (ripple_3sd[1:]-ripple_3sd[:-1])) )    # if first is true, the first one will be 1
+            ripple_start = np.where(ripple_boolean == 1)[0]
+            ripple_end = np.where(ripple_boolean == -1)[0]
+            self.r_s_e = np.vstack((ripple_start, ripple_end)).T
+            
+            rows_to_delete = set()
+            for i in range(self.r_s_e.shape[0]):
+                if self.r_s_e[i][1] - self.r_s_e[i][0] < 0.015*fs:              # if the ripple period shorter than 15ms
+                    rows_to_delete.add(i)
+                if max(ripple_7sd[self.r_s_e[i][0]:self.r_s_e[i][1]+1]) == 0:   # if don't contains a ripple peak which larger than +7*sd
+                    rows_to_delete.add(i)
+            self.r_s_e = np.delete(self.r_s_e, list(rows_to_delete), axis=0)
+            self.r_s_e += (int(window_len*fs/2))      # due to being windowed, the index need a offset, now the timetamp takes the middle of window
+            
+            self.r_p = np.zeros(self.r_s_e.shape[0]).astype(int)
+            for i in range(self.r_s_e.shape[0]):        
+                self.r_p[i] = np.argmax(ripple_power[self.r_s_e[i][0]:self.r_s_e[i][1]+1]) + self.r_s_e[i][0]
+    
+            #plot
+            fig, axs = plt.subplots(self.r_s_e.shape[0]//4+1, 4, figsize=((40,(self.r_s_e.shape[0]//4+1)*3)), tight_layout=True)
+            for i in range(self.r_s_e.shape[0]):
+                t = np.linspace(0, self.r_s_e[i][1]-self.r_s_e[i][0], num=self.r_s_e[i][1]-self.r_s_e[i][0]+1)/2  # /2 means convert sample point to ms
+                axs[i//4,i%4].plot(t,self.trace_all_ch[self.ripple_channel , self.r_s_e[i][0]:self.r_s_e[i][1]+1])
+                axs[i//4,i%4].set_xlim(0,200)
+            plt.savefig(  self.img_save_path/ ('ripple events raw ch'+str(self.ripple_channel)+'.svg')  )
+            plt.close()
+            
+            fig, axs = plt.subplots(self.r_s_e.shape[0]//4+1, 4, figsize=((40,(self.r_s_e.shape[0]//4+1)*3)), tight_layout=True)
+            for i in range(self.r_s_e.shape[0]):
+                t = np.linspace(0, self.r_s_e[i][1]-self.r_s_e[i][0], num=self.r_s_e[i][1]-self.r_s_e[i][0]+1)/2
+                axs[i//4,i%4].plot(t,ripple_trace[self.r_s_e[i][0]:self.r_s_e[i][1]+1])
+                axs[i//4,i%4].set_xlim(0,200)
+            plt.savefig(  self.img_save_path/ ('ripple events bandpassed ch'+str(self.ripple_channel)+'.svg')  )
+            plt.close()
+            
+            # generate real world time ripple time
+            self.ripple_start_end = self.r_s_e.astype(np.float64)
+            self.ripple_peak = self.r_p.astype(np.float64)
+            for i in range(len(self.r_s_e)):
+                self.ripple_start_end[i,0] =  self.time[self.r_s_e[i,0] ]
+                self.ripple_start_end[i,1] =  self.time[self.r_s_e[i,1] ]
+                self.ripple_peak[i] =  self.time[self.r_p[i] ]
+                
+            
+        
+        elif hasattr(self,'trace_all_ch_R'):       # bi-lateral recording
+            ripple_trace = signal.filtfilt(ripplepass_b, ripplepass_a, self.trace_all_ch_R[self.ripple_channel_R,:])
+            self.ripple_trace_R = ripple_trace
+            
+            ripple_windows = np.lib.stride_tricks.sliding_window_view(ripple_trace, int(window_len*fs))
+            ripple_power = np.sqrt(np.sum((ripple_windows**2/int(window_len*fs)), axis=1))# root mean square to serve as power, length offset +(window_len*fs-1)
+            ripple_3sd = np.where(ripple_power > np.mean(ripple_power)+3*np.std(ripple_power), 1, 0)# to mark their starts and stops.
+            ripple_7sd = np.where(ripple_power > np.mean(ripple_power)+7*np.std(ripple_power), 1, 0)# artificially mark those peaks. what would happend with large noise?
+            ripple_boolean =  np.concatenate( (np.atleast_1d(np.where(ripple_3sd[0]==1, 1, 0)), (ripple_3sd[1:]-ripple_3sd[:-1])) )    # if first is true, the first one will be 1
+            ripple_start = np.where(ripple_boolean == 1)[0]
+            ripple_end = np.where(ripple_boolean == -1)[0]
+            self.r_s_e_R = np.vstack((ripple_start, ripple_end)).T
+            
+            rows_to_delete = set()
+            for i in range(self.r_s_e_R.shape[0]):
+                if self.r_s_e_R[i][1] - self.r_s_e_R[i][0] < 0.015*fs:              # if the ripple period shorter than 15ms
+                    rows_to_delete.add(i)
+                if max(ripple_7sd[self.r_s_e_R[i][0]:self.r_s_e_R[i][1]+1]) == 0:   # if don't contains a ripple peak which larger than +7*sd
+                    rows_to_delete.add(i)
+            self.r_s_e_R = np.delete(self.r_s_e_R, list(rows_to_delete), axis=0)
+            self.r_s_e_R += (int(window_len*fs/2))      # due to being windowed, the index need a offset, now the timetamp takes the middle of window
+            
+            self.r_p_R = np.zeros(self.r_s_e_R.shape[0]).astype(int)
+            for i in range(self.r_s_e_R.shape[0]):        
+                self.r_p_R[i] = np.argmax(ripple_power[self.r_s_e_R[i][0]:self.r_s_e_R[i][1]+1]) + self.r_s_e_R[i][0]
+    
+            #plot
+            fig, axs = plt.subplots(self.r_s_e_R.shape[0]//4+1, 4, figsize=((40,(self.r_s_e_R.shape[0]//4+1)*3)), tight_layout=True)
+            for i in range(self.r_s_e_R.shape[0]):
+                t = np.linspace(0, self.r_s_e_R[i][1]-self.r_s_e_R[i][0], num=self.r_s_e_R[i][1]-self.r_s_e_R[i][0]+1)/2  # /2 means convert sample point to ms
+                axs[i//4,i%4].plot(t,self.trace_all_ch_R[self.ripple_channel_R, self.r_s_e_R[i][0]:self.r_s_e_R[i][1]+1])
+                axs[i//4,i%4].set_xlim(0,200)
+            plt.savefig(  self.img_save_path/ ('ripple events raw ch'+str(self.ripple_channel_R)+'.svg')  )
+            plt.savefig(  self.img_save_path/ ('ripple events raw ch'+str(self.ripple_channel_R)+'.png')  )
+            plt.close()
+            
+            fig, axs = plt.subplots(self.r_s_e_R.shape[0]//4+1, 4, figsize=((40,(self.r_s_e_R.shape[0]//4+1)*3)), tight_layout=True)
+            for i in range(self.r_s_e_R.shape[0]):
+                t = np.linspace(0, self.r_s_e_R[i][1]-self.r_s_e_R[i][0], num=self.r_s_e_R[i][1]-self.r_s_e_R[i][0]+1)/2
+                axs[i//4,i%4].plot(t,ripple_trace[self.r_s_e_R[i][0]:self.r_s_e_R[i][1]+1])
+                axs[i//4,i%4].set_xlim(0,200)
+            plt.savefig(  self.img_save_path/ ('ripple events bandpassed ch'+str(self.ripple_channel_R)+'.svg')  )
+            plt.savefig(  self.img_save_path/ ('ripple events bandpassed ch'+str(self.ripple_channel_R)+'.png')  )
+            plt.close()
+            
+            # generate real world time ripple time
+            self.ripple_start_end_R = self.r_s_e_R.astype(np.float64)
+            self.ripple_peak_R = self.r_p_R.astype(np.float64)
+            for i in range(len(self.r_s_e_R)):
+                self.ripple_start_end_R[i,0] =  self.time[self.r_s_e_R[i,0] ]
+                self.ripple_start_end_R[i,1] =  self.time[self.r_s_e_R[i,1] ]
+                self.ripple_peak_R[i] =  self.time[self.r_p_R[i] ]
+
+                
+            ############################ L R line ##############################
+        
+            ripple_trace = signal.filtfilt(ripplepass_b, ripplepass_a, self.trace_all_ch_L[self.ripple_channel_L-32,:])
+            self.ripple_trace_L = ripple_trace
+            
+            ripple_windows = np.lib.stride_tricks.sliding_window_view(ripple_trace, int(window_len*fs))
+            ripple_power = np.sqrt(np.sum((ripple_windows**2/int(window_len*fs)), axis=1))# root mean square to serve as power, length offset +(window_len*fs-1)
+            ripple_3sd = np.where(ripple_power > np.mean(ripple_power)+3*np.std(ripple_power), 1, 0)# to mark their starts and stops.
+            ripple_7sd = np.where(ripple_power > np.mean(ripple_power)+7*np.std(ripple_power), 1, 0)# artificially mark those peaks. what would happend with large noise?
+            ripple_boolean =  np.concatenate( (np.atleast_1d(np.where(ripple_3sd[0]==1, 1, 0)), (ripple_3sd[1:]-ripple_3sd[:-1])) )    # if first is true, the first one will be 1
+            ripple_start = np.where(ripple_boolean == 1)[0]
+            ripple_end = np.where(ripple_boolean == -1)[0]
+            self.r_s_e_L = np.vstack((ripple_start, ripple_end)).T
+            
+            rows_to_delete = set()
+            for i in range(self.r_s_e_L.shape[0]):
+                if self.r_s_e_L[i][1] - self.r_s_e_L[i][0] < 0.015*fs:              # if the ripple period shorter than 15ms
+                    rows_to_delete.add(i)
+                if max(ripple_7sd[self.r_s_e_L[i][0]:self.r_s_e_L[i][1]+1]) == 0:   # if don't contains a ripple peak which larger than +7*sd
+                    rows_to_delete.add(i)
+            self.r_s_e_L = np.delete(self.r_s_e_L, list(rows_to_delete), axis=0)
+            self.r_s_e_L += (int(window_len*fs/2))      # due to being windowed, the index need a offset, now the timetamp takes the middle of window
+            
+            self.r_p_L = np.zeros(self.r_s_e_L.shape[0]).astype(int)
+            for i in range(self.r_s_e_L.shape[0]):        
+                self.r_p_L[i] = np.argmax(ripple_power[self.r_s_e_L[i][0]:self.r_s_e_L[i][1]+1]) + self.r_s_e_L[i][0]
+    
+            #plot
+            fig, axs = plt.subplots(self.r_s_e_L.shape[0]//4+1, 4, figsize=((40,(self.r_s_e_L.shape[0]//4+1)*3)), tight_layout=True)
+            for i in range(self.r_s_e_L.shape[0]):
+                t = np.linspace(0, self.r_s_e_L[i][1]-self.r_s_e_L[i][0], num=self.r_s_e_L[i][1]-self.r_s_e_L[i][0]+1)/2  # /2 means convert sample point to ms
+                axs[i//4,i%4].plot(t,self.trace_all_ch_L[self.ripple_channel_L-32 , self.r_s_e_L[i][0]:self.r_s_e_L[i][1]+1])
+                axs[i//4,i%4].set_xlim(0,200)
+            plt.savefig(  self.img_save_path/ ('ripple events raw ch'+str(self.ripple_channel_L)+'.svg')  )
+            plt.savefig(  self.img_save_path/ ('ripple events raw ch'+str(self.ripple_channel_L)+'.png')  )
+            plt.close()
+            
+            fig, axs = plt.subplots(self.r_s_e_L.shape[0]//4+1, 4, figsize=((40,(self.r_s_e_L.shape[0]//4+1)*3)), tight_layout=True)
+            for i in range(self.r_s_e_L.shape[0]):
+                t = np.linspace(0, self.r_s_e_L[i][1]-self.r_s_e_L[i][0], num=self.r_s_e_L[i][1]-self.r_s_e_L[i][0]+1)/2
+                axs[i//4,i%4].plot(t,ripple_trace[self.r_s_e_L[i][0]:self.r_s_e_L[i][1]+1])
+                axs[i//4,i%4].set_xlim(0,200)
+            plt.savefig(  self.img_save_path/ ('ripple events bandpassed ch'+str(self.ripple_channel_L)+'.svg')  )
+            plt.savefig(  self.img_save_path/ ('ripple events bandpassed ch'+str(self.ripple_channel_L)+'.png')  )
+            plt.close()    
+            
+            # generate real world time ripple time
+            self.ripple_start_end_L = self.r_s_e_L.astype(np.float64)
+            self.ripple_peak_L = self.r_p_L.astype(np.float64)
+            for i in range(len(self.r_s_e_L)):
+                self.ripple_start_end_L[i,0] =  self.time[self.r_s_e_L[i,0] ]
+                self.ripple_start_end_L[i,1] =  self.time[self.r_s_e_L[i,1] ]
+                self.ripple_peak_L[i] =  self.time[self.r_p_L[i] ]
+               
+
+    def theta_cycle_detect(self, channel=None):
+        fs = 2000
+        gamma = [40,100]
+        theta = [5,11]
+        delta = [2,4]
+        gammapass_b, gammapass_a = signal.butter(2,gamma,btype='bandpass',output='ba',fs=fs)
+        thetapass_b, thetapass_a = signal.butter(2,theta,btype='bandpass',output='ba',fs=fs)
+        deltapass_b, deltapass_a = signal.butter(2,delta,btype='bandpass',output='ba',fs=fs)
+        
+        if hasattr(self,'trace_all_ch'):
+            if channel == None:                      # default: take the highest power channel as inspection
+                mean_theta_power = []
+                for i in range(32):
+                    theta_trace = signal.filtfilt(thetapass_b, thetapass_a, self.trace_all_ch[i,:])
+                    theta_power = np.sqrt(np.sum(theta_trace**2/theta_trace.shape[0])) # root mean square to serve as power
+                    mean_theta_power.append(theta_power)
+                    print(f'running:{i+1}/32', end='   ')
+                highest_theta_power_channel = mean_theta_power.index(max(mean_theta_power))
+                self.theta_channel = highest_theta_power_channel
+                self.theta_trace = self.trace_all_ch[self.theta_channel,:]
+            elif channel=='mean':
+                self.theta_channel = channel
+                self.theta_trace = np.mean(self.trace_all_ch, axis=0)
+            elif type(channel)==int:
+                self.theta_channel = channel
+                self.theta_trace = self.trace_all_ch[channel,:]
+            else:
+                raise ValueError('channel should be int or mean or default choose for a 32ch recording')
+            
+            ########################### band pass filter ########################
+            self.gamma_trace = signal.filtfilt(gammapass_b, gammapass_a, self.theta_trace)
+            self.delta_trace = signal.filtfilt(deltapass_b, deltapass_a, self.theta_trace)          # filter the delta part of the same raw trace 
+            self.theta_trace = signal.filtfilt(thetapass_b, thetapass_a, self.theta_trace)
+            ########################### peak & trough ###########################
+            
+            peak_trough_detect_windows = np.lib.stride_tricks.sliding_window_view(self.theta_trace, 3 )    # window= 3 sample points to find if peak or trough exist
+            max_in_window = np.argmax(peak_trough_detect_windows, axis=1)                             # 找到每一个window中极值的位置
+            min_in_window = np.argmin(peak_trough_detect_windows, axis=1)
+            peak = np.where(max_in_window==1)[0]+1                                                    # 如果是拐点，那么极值应该是处于中间的位置 index=1 
+            trough = np.where(min_in_window==1)[0]+1                                                  # 那么这行的行号加极值的位置号1 即是极值在总trace的位置
+            
+            peak_peak = np.vstack((peak[:-1],peak[1:])).T
+            trough_in = []
+            if trough[0]<peak_peak[0,0]:
+                j=1  # trough start from 1
+            elif peak_peak[0,0]<trough[0]<peak_peak[0,1]:
+                j=0  # trough start from 0
+            else:
+                raise Exception('two peaks in the start??')
+            for i in range(peak_peak.shape[0]):
+                if peak_peak[i,0]<trough[j]<peak_peak[i,1]:         # find which trough time that are between two peaks
+                    trough_in.append(trough[j])                                                                     
+                    j += 1
+                else:
+                    raise Exception('Found no trough between peaks??')
+            trough_in = np.array(trough_in)
+            peak_trough_peak = np.vstack((peak_peak[:,0], trough_in, peak_peak[:,1])).T
+            
+            ######################### check discard ###########################
+            window_len = 0.5    # I think this window should cover at least a cycle of delta(2~4Hz), but that would take more averaged information than one theta cycle, is that good?
+            theta_windows = np.lib.stride_tricks.sliding_window_view(self.theta_trace, int(window_len*fs))
+            theta_power = np.sqrt(np.sum((theta_windows**2/int(window_len*fs)), axis=1))    # root mean square to serve as power, length offset +(window_len*fs-1)
+            delta_windows = np.lib.stride_tricks.sliding_window_view(self.delta_trace, int(window_len*fs))
+            delta_power = np.sqrt(np.sum((delta_windows**2/int(window_len*fs)), axis=1))
+            theta_delta_ratio_mean = np.mean(theta_power / delta_power) 
+            theta_delta_ratio_std = np.std(theta_power / delta_power)
+            
+            row_to_delete=[]
+            for i, p_t_p in enumerate(peak_trough_peak):
+                theta_power_here = np.sqrt(np.sum(self.theta_trace[p_t_p[0]:p_t_p[2]]**2/(p_t_p[2]-p_t_p[0]+1)))
+                delta_power_here = np.sqrt(np.sum(self.delta_trace[p_t_p[0]:p_t_p[2]]**2/(p_t_p[2]-p_t_p[0]+1)))
+                theta_delta_ratio_here = theta_power_here / delta_power_here
+                
+                if p_t_p[1]-p_t_p[0] < fs/theta[1]/2  or p_t_p[2]-p_t_p[1] < fs/theta[1]/2:
+                    row_to_delete.append(i)
+                elif p_t_p[1]-p_t_p[0] > fs/theta[0]/2  or p_t_p[2]-p_t_p[1] > fs/theta[0]/2:
+                    row_to_delete.append(i)
+                elif theta_delta_ratio_here < theta_delta_ratio_mean-theta_delta_ratio_std:
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e[:,0]<p_t_p[0]) & (p_t_p[0]<self.r_s_e[:,1]) ):  # if the theta cycle(1st peak) happened during the ripple period
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e[:,0]<p_t_p[1]) & (p_t_p[1]<self.r_s_e[:,1]) ):  # if the theta cycle(trough)
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e[:,0]<p_t_p[2]) & (p_t_p[2]<self.r_s_e[:,1]) ):  # if the theta cycle(2st peak)
+                    row_to_delete.append(i)
+                                        
+            peak_trough_peak = np.delete(peak_trough_peak, row_to_delete, axis=0)
+            
+            self.t_p_t_p = peak_trough_peak
+            
+            # generate real world time theta cycle time
+            self.theta_peak_trough_peak= self.t_p_t_p.astype(np.float64)
+            for i in range(len(self.t_p_t_p)):
+                self.theta_peak_trough_peak[i,0] =  self.time[self.t_p_t_p[i,0] ]
+                self.theta_peak_trough_peak[i,1] =  self.time[self.t_p_t_p[i,1] ]
+                self.theta_peak_trough_peak[i,2] =  self.time[self.t_p_t_p[i,2] ]
+
+            
+            # st=25
+            # t=10
+            # plt.figure(figsize=(40, 4))
+            # plt.plot(self.time[2000*st:2000*st+2000*t],self.ripple_trace[2000*st:2000*st+2000*t], color='k')
+            # # plt.plot(self.time[2000*st:2000*st+2000*t],self.delta_trace[2000*st:2000*st+2000*t], color='b')
+            # plt.plot(self.time[2000*st:2000*st+2000*t],theta_trace[2000*st:2000*st+2000*t], color='b')
+            # for i in peak_trough_peak:
+            #     plt.plot(self.time[i],theta_trace[i], color='y')
+            # plt.xlim([st,st+t])
+            # plt.savefig(  self.img_save_path/ ('test.svg')  )
+            
+            
+
         
         
-        self.channel = clusters_info.loc['ch']
-        self.tetrode = self.channel//4
+        elif hasattr(self,'trace_all_ch_R'):
+            if channel == None:                      # default: take the highest power channel as inspection
+                mean_theta_power_R = []
+                mean_theta_power_L = []
+                for i in range(32):
+                    theta_trace_R = signal.filtfilt(thetapass_b, thetapass_a, self.trace_all_ch_R[i,:])
+                    theta_trace_L = signal.filtfilt(thetapass_b, thetapass_a, self.trace_all_ch_L[i,:])
+                    theta_power_R = np.sqrt(np.sum(theta_trace_R**2/theta_trace_R.shape[0]))
+                    theta_power_L = np.sqrt(np.sum(theta_trace_L**2/theta_trace_L.shape[0])) # root mean square to serve as power
+                    mean_theta_power_R.append(theta_power_R)
+                    mean_theta_power_L.append(theta_power_L)
+                    print(f'running:{i+1}/32', end='   ')
+                highest_theta_power_channel_R = mean_theta_power_R.index(max(mean_theta_power_R))
+                highest_theta_power_channel_L = mean_theta_power_L.index(max(mean_theta_power_L))
+                self.theta_channel_R = highest_theta_power_channel_R
+                self.theta_channel_L = highest_theta_power_channel_L+32
+                self.theta_trace_R = self.trace_all_ch_R[self.theta_channel_R,:]
+                self.theta_trace_L = self.trace_all_ch_L[self.theta_channel_L-32,:]
+                
+            elif channel=='mean':
+                self.theta_channel_R = channel
+                self.theta_channel_L = channel
+                self.theta_trace_R = np.mean(self.trace_all_ch_R, axis=0)
+                self.theta_trace_L = np.mean(self.trace_all_ch_L, axis=0)
+                
+            elif type(channel)==list:
+                self.theta_channel_R = min(channel)
+                self.theta_channel_L = max(channel)
+                self.theta_trace_R = self.trace_all_ch_R[self.theta_channel_R,:]
+                self.theta_trace_L = self.trace_all_ch_L[self.theta_channel_L-32,:]
+            
+            else:
+                raise ValueError('channel should be list of int or mean or default choose for a 32ch recording')
+
+            
+            # R detect    
+            ########################### band pass filter ########################
+            self.gamma_trace_R = signal.filtfilt(gammapass_b, gammapass_a, self.theta_trace_R)
+            self.delta_trace_R = signal.filtfilt(deltapass_b, deltapass_a, self.theta_trace_R)          # filter the delta part of the same raw trace 
+            self.theta_trace_R = signal.filtfilt(thetapass_b, thetapass_a, self.theta_trace_R)
+            ########################### peak & trough ###########################
+            
+            peak_trough_detect_windows = np.lib.stride_tricks.sliding_window_view(self.theta_trace_R, 3 )    # window= 3 sample points to find if peak or trough exist
+            max_in_window = np.argmax(peak_trough_detect_windows, axis=1)                             # 找到每一个window中极值的位置
+            min_in_window = np.argmin(peak_trough_detect_windows, axis=1)
+            peak = np.where(max_in_window==1)[0]+1                                                    # 如果是拐点，那么极值应该是处于中间的位置 index=1 
+            trough = np.where(min_in_window==1)[0]+1                                                  # 那么这行的行号加极值的位置号1 即是极值在总trace的位置
+            
+            peak_peak = np.vstack((peak[:-1],peak[1:])).T
+            trough_in = []
+            if trough[0]<peak_peak[0,0]:
+                j=1  # trough start from 1
+            elif peak_peak[0,0]<trough[0]<peak_peak[0,1]:
+                j=0  # trough start from 0
+            else:
+                raise Exception('two peaks in the start??')
+            for i in range(peak_peak.shape[0]):
+                if peak_peak[i,0]<trough[j]<peak_peak[i,1]:         # find which trough time that are between two peaks
+                    trough_in.append(trough[j])                                                                     
+                    j += 1
+                else:
+                    raise Exception('Found no trough between peaks??')
+            trough_in = np.array(trough_in)
+            peak_trough_peak = np.vstack((peak_peak[:,0], trough_in, peak_peak[:,1])).T
+            
+            ######################### check discard ###########################
+            window_len = 0.5    # I think this window should cover at least a cycle of delta(2~4Hz), but that would take more averaged information than one theta cycle, is that good?
+            theta_windows = np.lib.stride_tricks.sliding_window_view(self.theta_trace_R, int(window_len*fs))
+            theta_power = np.sqrt(np.sum((theta_windows**2/int(window_len*fs)), axis=1))    # root mean square to serve as power, length offset +(window_len*fs-1)
+            delta_windows = np.lib.stride_tricks.sliding_window_view(self.delta_trace_R, int(window_len*fs))
+            delta_power = np.sqrt(np.sum((delta_windows**2/int(window_len*fs)), axis=1))
+            theta_delta_ratio_mean = np.mean(theta_power / delta_power) 
+            theta_delta_ratio_std = np.std(theta_power / delta_power)
+            
+            row_to_delete=[]
+            for i, p_t_p in enumerate(peak_trough_peak):
+                theta_power_here = np.sqrt(np.sum(self.theta_trace_R[p_t_p[0]:p_t_p[2]]**2/(p_t_p[2]-p_t_p[0]+1)))
+                delta_power_here = np.sqrt(np.sum(self.delta_trace_R[p_t_p[0]:p_t_p[2]]**2/(p_t_p[2]-p_t_p[0]+1)))
+                theta_delta_ratio_here = theta_power_here / delta_power_here
+                
+                if p_t_p[1]-p_t_p[0] < fs/theta[1]/2  or p_t_p[2]-p_t_p[1] < fs/theta[1]/2:
+                    row_to_delete.append(i)
+                elif p_t_p[1]-p_t_p[0] > fs/theta[0]/2  or p_t_p[2]-p_t_p[1] > fs/theta[0]/2:
+                    row_to_delete.append(i)
+                elif theta_delta_ratio_here < theta_delta_ratio_mean-theta_delta_ratio_std:
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e_R[:,0]<p_t_p[0]) & (p_t_p[0]<self.r_s_e_R[:,1]) ):  # if the theta cycle(1st peak) happened during the ripple period
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e_R[:,0]<p_t_p[1]) & (p_t_p[1]<self.r_s_e_R[:,1]) ):  # if the theta cycle(trough)
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e_R[:,0]<p_t_p[2]) & (p_t_p[2]<self.r_s_e_R[:,1]) ):  # if the theta cycle(2st peak)
+                    row_to_delete.append(i)
+                                        
+            peak_trough_peak = np.delete(peak_trough_peak, row_to_delete, axis=0)
+            
+            self.t_p_t_p_R = peak_trough_peak
+            
+            # generate real world time theta cycle time
+            self.theta_peak_trough_peak_R= self.t_p_t_p_R.astype(np.float64)
+            for i in range(len(self.t_p_t_p_R)):
+                self.theta_peak_trough_peak_R[i,0] =  self.time[self.t_p_t_p_R[i,0] ]
+                self.theta_peak_trough_peak_R[i,1] =  self.time[self.t_p_t_p_R[i,1] ]
+                self.theta_peak_trough_peak_R[i,2] =  self.time[self.t_p_t_p_R[i,2] ]
+            
+            
+            # L detect    
+            ########################### band pass filter ########################
+            self.gamma_trace_L = signal.filtfilt(gammapass_b, gammapass_a, self.theta_trace_L)
+            self.delta_trace_L = signal.filtfilt(deltapass_b, deltapass_a, self.theta_trace_L)          # filter the delta part of the same raw trace 
+            self.theta_trace_L = signal.filtfilt(thetapass_b, thetapass_a, self.theta_trace_L)
+            ########################### peak & trough ###########################
+            
+            peak_trough_detect_windows = np.lib.stride_tricks.sliding_window_view(self.theta_trace_L, 3 )    # window= 3 sample points to find if peak or trough exist
+            max_in_window = np.argmax(peak_trough_detect_windows, axis=1)                             # 找到每一个window中极值的位置
+            min_in_window = np.argmin(peak_trough_detect_windows, axis=1)
+            peak = np.where(max_in_window==1)[0]+1                                                    # 如果是拐点，那么极值应该是处于中间的位置 index=1 
+            trough = np.where(min_in_window==1)[0]+1                                                  # 那么这行的行号加极值的位置号1 即是极值在总trace的位置
+            
+            peak_peak = np.vstack((peak[:-1],peak[1:])).T
+            trough_in = []
+            if trough[0]<peak_peak[0,0]:
+                j=1  # trough start from 1
+            elif peak_peak[0,0]<trough[0]<peak_peak[0,1]:
+                j=0  # trough start from 0
+            else:
+                raise Exception('two peaks in the start??')
+            for i in range(peak_peak.shape[0]):
+                if peak_peak[i,0]<trough[j]<peak_peak[i,1]:         # find which trough time that are between two peaks
+                    trough_in.append(trough[j])                                                                     
+                    j += 1
+                else:
+                    raise Exception('Found no trough between peaks??')
+            trough_in = np.array(trough_in)
+            peak_trough_peak = np.vstack((peak_peak[:,0], trough_in, peak_peak[:,1])).T
+            
+            ######################### check discard ###########################
+            window_len = 0.5    # I think this window should cover at least a cycle of delta(2~4Hz), but that would take more averaged information than one theta cycle, is that good?
+            theta_windows = np.lib.stride_tricks.sliding_window_view(self.theta_trace_L, int(window_len*fs))
+            theta_power = np.sqrt(np.sum((theta_windows**2/int(window_len*fs)), axis=1))    # root mean square to serve as power, length offset +(window_len*fs-1)
+            delta_windows = np.lib.stride_tricks.sliding_window_view(self.delta_trace_L, int(window_len*fs))
+            delta_power = np.sqrt(np.sum((delta_windows**2/int(window_len*fs)), axis=1))
+            theta_delta_ratio_mean = np.mean(theta_power / delta_power) 
+            theta_delta_ratio_std = np.std(theta_power / delta_power)
+            
+            row_to_delete=[]
+            for i, p_t_p in enumerate(peak_trough_peak):
+                theta_power_here = np.sqrt(np.sum(self.theta_trace_L[p_t_p[0]:p_t_p[2]]**2/(p_t_p[2]-p_t_p[0]+1)))
+                delta_power_here = np.sqrt(np.sum(self.delta_trace_L[p_t_p[0]:p_t_p[2]]**2/(p_t_p[2]-p_t_p[0]+1)))
+                theta_delta_ratio_here = theta_power_here / delta_power_here
+                
+                if p_t_p[1]-p_t_p[0] < fs/theta[1]/2  or p_t_p[2]-p_t_p[1] < fs/theta[1]/2:
+                    row_to_delete.append(i)
+                elif p_t_p[1]-p_t_p[0] > fs/theta[0]/2  or p_t_p[2]-p_t_p[1] > fs/theta[0]/2:
+                    row_to_delete.append(i)
+                elif theta_delta_ratio_here < theta_delta_ratio_mean-theta_delta_ratio_std:
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e_L[:,0]<p_t_p[0]) & (p_t_p[0]<self.r_s_e_L[:,1]) ):  # if the theta cycle(1st peak) happened during the ripple period
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e_L[:,0]<p_t_p[1]) & (p_t_p[1]<self.r_s_e_L[:,1]) ):  # if the theta cycle(trough)
+                    row_to_delete.append(i)
+                elif np.any( (self.r_s_e_L[:,0]<p_t_p[2]) & (p_t_p[2]<self.r_s_e_L[:,1]) ):  # if the theta cycle(2st peak)
+                    row_to_delete.append(i)
+                                        
+            peak_trough_peak = np.delete(peak_trough_peak, row_to_delete, axis=0)
+            
+            self.t_p_t_p_L = peak_trough_peak
+            
+            # generate real world time theta cycle time
+            self.theta_peak_trough_peak_L= self.t_p_t_p_L.astype(np.float64)
+            for i in range(len(self.t_p_t_p_L)):
+                self.theta_peak_trough_peak_L[i,0] =  self.time[self.t_p_t_p_L[i,0] ]
+                self.theta_peak_trough_peak_L[i,1] =  self.time[self.t_p_t_p_L[i,1] ]
+                self.theta_peak_trough_peak_L[i,2] =  self.time[self.t_p_t_p_L[i,2] ]
         
+     
+
+    def CWT(self, uplim_Hz=150, totalscale=30, starttime = 0, t=20):
         
+        def pywt_cwt(data, uplim_Hz, totalscale, fs=2000, wavename='cgau8'):  # total_scale means how many range of frequency
+            fc = pywt.central_frequency(wavename)
+            cparam = (fs/uplim_Hz)*fc*totalscale# so uplim can be 250Hz?
+            scale = cparam / np.arange(totalscale, 0, -1)
+            coef, frequencie = pywt.cwt(data, scale, wavename, 1/fs)
+            return coef, frequencie
+        
+        if hasattr(self,'trace_all_ch'):
+            cwt_data = np.mean(self.trace_all_ch, axis=0)
+            coef,freq = pywt_cwt(cwt_data,uplim_Hz,totalscale)
+        
+        st = starttime*2000
+        deltat = t*2000
+        plt.contourf(self.time[st:st+deltat], freq, abs(coef[:,st:st+deltat]), cmap='rainbow')
+        plt.savefig(  self.img_save_path/ ('cwt full.svg')  )
+        plt.close()
+        plt.contourf(self.time[st:st+deltat], freq[:15], abs(coef[:15,st:st+deltat]), cmap='rainbow')
+        plt.savefig(  self.img_save_path/ ('cwt 2 half.svg')  )
+        plt.close()
+        plt.contourf(self.time[st:st+deltat], freq[15:], abs(coef[15:,st:st+deltat]), cmap='rainbow')
+        plt.savefig(  self.img_save_path/ ('cwt 1 half.svg')  )
+        plt.close()
+
         
         
         
